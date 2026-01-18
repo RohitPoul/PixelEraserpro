@@ -47,11 +47,17 @@ set(RESOURCES
     resources/resources.qrc
 )
 
+# Windows icon
+if(WIN32)
+    set(APP_ICON_RESOURCE resources/app.rc)
+endif()
+
 # Executable
 add_executable(${PROJECT_NAME}
     ${SOURCES}
     ${HEADERS}
     ${RESOURCES}
+    ${APP_ICON_RESOURCE}
 )
 
 # Include directories
