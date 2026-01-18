@@ -61,7 +61,7 @@ private:
     void loadImageFile(const QString& path);
     bool confirmSaveBeforeClose();
     QWidget* createSeparator();
-    void showProgress(bool show);
+    void showProgress(bool show, const QString& message = QString());
 
     CanvasWidget* m_canvas;
     ImageProcessor* m_processor;
