@@ -349,12 +349,13 @@ void MainWindow::setupStatusBar() {
     m_historyLabel = new QLabel("");
     
     m_progressBar = new QProgressBar();
-    m_progressBar->setFixedWidth(150);
-    m_progressBar->setFixedHeight(16);
-    m_progressBar->setTextVisible(false);
+    m_progressBar->setFixedWidth(200);
+    m_progressBar->setFixedHeight(18);
+    m_progressBar->setTextVisible(true);
+    m_progressBar->setFormat("Processing...");
     m_progressBar->setVisible(false);
     m_progressBar->setStyleSheet(
-        "QProgressBar { background: #1e1e1e; border: 1px solid #3d3d42; border-radius: 3px; }"
+        "QProgressBar { background: #1e1e1e; border: 1px solid #3d3d42; border-radius: 3px; color: #ccc; font-size: 11px; }"
         "QProgressBar::chunk { background: #6a9ed4; border-radius: 2px; }"
     );
 
@@ -453,7 +454,7 @@ void MainWindow::connectSignals() {
         // Disable controls during processing
         m_softeningSlider->setEnabled(false);
         m_softeningSpin->setEnabled(false);
-        showProgress(true);
+        showProgress(true, "Softening...");
         statusBar()->showMessage("Applying edge softening...");
         QApplication::processEvents();
         
@@ -474,7 +475,7 @@ void MainWindow::connectSignals() {
         // Disable controls during processing
         m_softeningSlider->setEnabled(false);
         m_softeningSpin->setEnabled(false);
-        showProgress(true);
+        showProgress(true, "Softening...");
         statusBar()->showMessage("Applying edge softening...");
         QApplication::processEvents();
         
@@ -535,7 +536,7 @@ void MainWindow::dropEvent(QDropEvent* event) {
 
 void MainWindow::loadImageFile(const QString& path) {
     // Show loading indicator
-    showProgress(true);
+    showProgress(true, "Loading image...");
     statusBar()->showMessage("Loading image...");
     QApplication::processEvents();
     
@@ -607,15 +608,16 @@ void MainWindow::quickExport() {
             int newH = resizeDialog.getNewHeight();
             
             if (newW != m_processor->getWidth() || newH != m_processor->getHeight()) {
-                m_historyManager->saveState();
+                m_historyManager->saveStateBeforeChange();
                 m_processor->resize(newW, newH);
+                m_historyManager->saveState();
                 m_canvas->updateDisplay();
                 updateStatusBar();
             }
         }
         
         // Show progress
-        showProgress(true);
+        showProgress(true, "Exporting...");
         statusBar()->showMessage("Exporting...");
         QApplication::processEvents();
         
@@ -651,8 +653,9 @@ void MainWindow::resizeImage() {
         int newH = dialog.getNewHeight();
         
         if (newW != m_processor->getWidth() || newH != m_processor->getHeight()) {
-            m_historyManager->saveState();
+            m_historyManager->saveStateBeforeChange();
             m_processor->resize(newW, newH);
+            m_historyManager->saveState();
             m_canvas->updateDisplay();
             m_canvas->fitToScreen();
             updateStatusBar();
@@ -695,10 +698,11 @@ void MainWindow::showShortcuts() {
     );
 }
 
-void MainWindow::showProgress(bool show) {
+void MainWindow::showProgress(bool show, const QString& message) {
     m_progressBar->setVisible(show);
     if (show) {
         m_progressBar->setRange(0, 0); // Indeterminate
+        m_progressBar->setFormat(message.isEmpty() ? "Processing..." : message);
     }
 }
 
