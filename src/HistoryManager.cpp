@@ -17,6 +17,9 @@ void HistoryManager::saveState() {
 
     // Remove any redo states when making a new change
     if (m_currentIndex < static_cast<int>(m_history.size()) - 1) {
+        for (size_t i = m_currentIndex + 1; i < m_history.size(); ++i) {
+            m_history[i].imageState.release();
+        }
         m_history.erase(m_history.begin() + m_currentIndex + 1, m_history.end());
     }
 
@@ -30,9 +33,23 @@ void HistoryManager::saveState() {
     m_history.push_back(std::move(historyState));
     m_currentIndex = static_cast<int>(m_history.size()) - 1;
 
-    // Trim if needed
     trimHistory();
+    emit historyChanged();
+}
 
+void HistoryManager::saveStateBeforeChange() {
+    // Only save if we don't already have the current state saved
+    // This is called BEFORE making a change
+    if (!m_processor || !m_processor->hasImage()) return;
+    
+    // If we're not at the end of history, we already have states ahead - clear them
+    if (m_currentIndex < static_cast<int>(m_history.size()) - 1) {
+        for (size_t i = m_currentIndex + 1; i < m_history.size(); ++i) {
+            m_history[i].imageState.release();
+        }
+        m_history.erase(m_history.begin() + m_currentIndex + 1, m_history.end());
+    }
+    
     emit historyChanged();
 }
 
