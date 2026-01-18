@@ -20,6 +20,9 @@ public:
     // Save current state before an operation
     void saveState();
     
+    // Clear redo states before making a change (call before change, then saveState after)
+    void saveStateBeforeChange();
+    
     // Save initial state when image is loaded
     void saveInitialState();
 
