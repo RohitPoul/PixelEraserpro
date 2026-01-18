@@ -1,5 +1,6 @@
 # Build directories
 build/
+build-*/
 cmake-build-*/
 out/
 
@@ -40,3 +41,8 @@ CMakeLists.txt.user*
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Deployment
+*_Portable/
+*.zip
+*_Setup_*.exe
