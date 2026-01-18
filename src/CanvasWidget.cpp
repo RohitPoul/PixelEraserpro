@@ -304,19 +304,32 @@ void CanvasWidget::drawImage(QPainter& painter, const QRect& clipRect) {
         m_processor->getHeight() * m_zoom
     );
     
-    if (!m_showOriginal) {
-        painter.drawImage(targetRect, *imgToDraw);
-    }
+    // Always draw the processed image first
+    painter.drawImage(targetRect, *imgToDraw);
     
+    // If comparing, draw blurred original on top with opacity
     if (m_showOriginal && !m_originalImage.isNull()) {
-        painter.setOpacity(m_compareOpacity);
-        painter.drawImage(targetRect, m_originalImage);
+        // Create blurred version of original for overlay
+        QImage blurredOriginal = m_originalImage.scaled(
+            m_originalImage.width() / 4, 
+            m_originalImage.height() / 4,
+            Qt::KeepAspectRatio, 
+            Qt::SmoothTransformation
+        ).scaled(
+            m_originalImage.width(),
+            m_originalImage.height(),
+            Qt::KeepAspectRatio,
+            Qt::SmoothTransformation
+        );
+        
+        painter.setOpacity(m_compareOpacity * 0.7);
+        painter.drawImage(targetRect, blurredOriginal);
         painter.setOpacity(1.0);
         
+        // Show label
         painter.setPen(QColor(255, 255, 255, 200));
-        painter.setFont(QFont("Segoe UI", 14, QFont::Bold));
-        QString label = QString("ORIGINAL (%1%)").arg(static_cast<int>(m_compareOpacity * 100));
-        painter.drawText(rect().adjusted(10, 10, -10, -10), Qt::AlignTop | Qt::AlignHCenter, label);
+        painter.setFont(QFont("Segoe UI", 12, QFont::Bold));
+        painter.drawText(rect().adjusted(10, 10, -10, -10), Qt::AlignTop | Qt::AlignHCenter, "COMPARING ORIGINAL");
     }
 }
 
@@ -360,7 +373,8 @@ QPoint CanvasWidget::imageToScreen(const QPoint& imagePos) const {
 void CanvasWidget::mousePressEvent(QMouseEvent* event) {
     m_lastMousePos = event->pos();
 
-    if (m_spaceHeld) {
+    // Space or H held = pan mode only
+    if (m_spaceHeld || m_showOriginal) {
         if (event->button() == Qt::LeftButton) {
             m_isPanning = true;
             setCursor(Qt::ClosedHandCursor);
@@ -381,18 +395,25 @@ void CanvasWidget::mousePressEvent(QMouseEvent* event) {
         if (imagePos.x() >= 0 && imagePos.x() < m_processor->getWidth() &&
             imagePos.y() >= 0 && imagePos.y() < m_processor->getHeight()) {
 
-            m_historyManager->saveState();
-            m_hasUnsavedStroke = true;
-
             if (m_toolManager->currentTool() == ToolManager::AutoColor) {
+                // Check if pixel is already transparent - no need to do anything
+                QImage img = m_processor->getDisplayImage();
+                QRgb pixel = img.pixel(imagePos.x(), imagePos.y());
+                if (qAlpha(pixel) == 0) {
+                    return; // Already transparent, skip
+                }
+                
+                m_historyManager->saveStateBeforeChange();
                 handleAutoColorTool(imagePos);
-                // Reset rendered region since image changed
+                m_historyManager->saveState();
                 m_renderedRegion = QRect();
                 rebuildFullCache();
+                if (m_isLargeImage) renderVisibleArea();
                 emit imageModified();
             } else {
                 m_isDrawing = true;
                 m_lastDrawPos = imagePos;
+                m_historyManager->saveStateBeforeChange();
                 
                 int brushSize = m_toolManager->brushSize();
                 QRect dirtyRect(imagePos.x() - brushSize, imagePos.y() - brushSize,
@@ -421,7 +442,8 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent* event) {
         }
     }
 
-    if (m_spaceHeld) {
+    // Space or H held = always pan
+    if (m_spaceHeld || m_showOriginal) {
         if (m_isPanning) {
             QPoint delta = event->pos() - m_lastMousePos;
             m_panOffset += QPointF(delta);
@@ -481,9 +503,8 @@ void CanvasWidget::mouseReleaseEvent(QMouseEvent* event) {
 
     if (m_isPanning) {
         m_isPanning = false;
-        setCursor(m_spaceHeld ? Qt::OpenHandCursor : Qt::ArrowCursor);
+        setCursor((m_spaceHeld || m_showOriginal) ? Qt::OpenHandCursor : Qt::ArrowCursor);
         
-        // Render newly visible area after pan
         if (m_isLargeImage) {
             renderVisibleArea();
             update();
@@ -492,7 +513,8 @@ void CanvasWidget::mouseReleaseEvent(QMouseEvent* event) {
 
     if (m_isDrawing) {
         m_isDrawing = false;
-        m_hasUnsavedStroke = false;
+        // Save state AFTER the brush stroke is complete
+        m_historyManager->saveState();
         emit imageModified();
     }
 }
@@ -541,12 +563,23 @@ void CanvasWidget::keyPressEvent(QKeyEvent* event) {
         setCursor(Qt::OpenHandCursor);
         update();
     }
+    if (event->key() == Qt::Key_H && !event->isAutoRepeat()) {
+        m_showOriginal = true;
+        setCursor(Qt::OpenHandCursor);
+        update();
+    }
     QWidget::keyPressEvent(event);
 }
 
 void CanvasWidget::keyReleaseEvent(QKeyEvent* event) {
     if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
         m_spaceHeld = false;
+        m_isPanning = false;
+        setCursor(Qt::ArrowCursor);
+        update();
+    }
+    if (event->key() == Qt::Key_H && !event->isAutoRepeat()) {
+        m_showOriginal = false;
         m_isPanning = false;
         setCursor(Qt::ArrowCursor);
         update();
