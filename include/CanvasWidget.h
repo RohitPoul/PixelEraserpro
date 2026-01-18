@@ -98,7 +98,6 @@ private:
     bool m_isPanning = false;
     bool m_isDrawing = false;
     bool m_spaceHeld = false;
-    bool m_hasUnsavedStroke = false;
     bool m_mouseInWidget = false;
     QPoint m_lastMousePos;
     QPoint m_lastDrawPos;
