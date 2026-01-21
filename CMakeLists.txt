@@ -16,8 +16,9 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
 # Find packages
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Concurrent)
 find_package(OpenCV REQUIRED)
+find_package(onnxruntime CONFIG REQUIRED)
 
 # Source files
 set(SOURCES
@@ -29,6 +30,8 @@ set(SOURCES
     src/HistoryManager.cpp
     src/ExportDialog.cpp
     src/ResizeDialog.cpp
+    src/Upscaler.cpp
+    src/UpscaleDialog.cpp
 )
 
 # Header files
@@ -40,6 +43,8 @@ set(HEADERS
     include/HistoryManager.h
     include/ExportDialog.h
     include/ResizeDialog.h
+    include/Upscaler.h
+    include/UpscaleDialog.h
 )
 
 # Resources
@@ -72,7 +77,10 @@ target_link_libraries(${PROJECT_NAME}
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
+    Qt6::Network
+    Qt6::Concurrent
     ${OpenCV_LIBS}
+    onnxruntime::onnxruntime
 )
 
 # Windows specific
