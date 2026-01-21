@@ -5,6 +5,8 @@
 #include "HistoryManager.h"
 #include "ExportDialog.h"
 #include "ResizeDialog.h"
+#include "UpscaleDialog.h"
+#include "Upscaler.h"
 
 #include <QApplication>
 #include <QFileDialog>
@@ -20,6 +22,9 @@
 #include <QScrollArea>
 #include <QToolButton>
 #include <QTimer>
+#include <QProgressDialog>
+#include <QtConcurrent>
+#include <QFutureWatcher>
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
@@ -112,6 +117,7 @@ void MainWindow::setupMenuBar() {
     // Image menu
     QMenu* imageMenu = menuBar()->addMenu("Image");
     imageMenu->addAction("Resize...", this, &MainWindow::resizeImage, QKeySequence("Ctrl+Alt+R"));
+    imageMenu->addAction("Upscale...", this, &MainWindow::upscaleImage, QKeySequence("Ctrl+Alt+U"));
 
     // View menu
     QMenu* viewMenu = menuBar()->addMenu("View");
@@ -311,8 +317,8 @@ void MainWindow::setupToolPanel() {
     compareHeader->setObjectName("sectionHeader");
     layout->addWidget(compareHeader);
     
-    m_compareBtn = new QPushButton("Hold H to Compare");
-    m_compareBtn->setToolTip("Hold to view original image");
+    m_compareBtn = new QPushButton("Press H to Compare");
+    m_compareBtn->setToolTip("Press H to view original image");
     layout->addWidget(m_compareBtn);
     
     QHBoxLayout* opacityLayout = new QHBoxLayout();
@@ -661,6 +667,86 @@ void MainWindow::resizeImage() {
             updateStatusBar();
             statusBar()->showMessage(QString("Resized to %1 x %2").arg(newW).arg(newH), 3000);
         }
+    }
+}
+
+void MainWindow::upscaleImage() {
+    if (!m_processor->hasImage()) {
+        QMessageBox::warning(this, "Upscale", "No image loaded.");
+        return;
+    }
+    
+    // Check if image has been modified (has transparency changes)
+    if (m_historyManager->canUndo()) {
+        QMessageBox::warning(this, "Upscale", 
+            "Upscaling is only available for unmodified images.\n"
+            "Please open a fresh image to use this feature.");
+        return;
+    }
+    
+    UpscaleDialog dialog(this);
+    if (dialog.exec() == QDialog::Accepted) {
+        Upscaler::Model model = dialog.getSelectedModel();
+        int scale = dialog.getScale();
+        
+        // Get input image
+        cv::Mat inputImage = m_processor->getCurrentImage().clone();
+        
+        // Create progress dialog
+        QProgressDialog* progressDialog = new QProgressDialog(this);
+        progressDialog->setWindowTitle("AI Upscaling");
+        progressDialog->setLabelText("Processing with Real-ESRGAN AI...\n\nThis may take a moment for large images.");
+        progressDialog->setRange(0, 0);  // Indeterminate initially
+        progressDialog->setMinimumDuration(0);
+        progressDialog->setWindowModality(Qt::WindowModal);
+        progressDialog->setCancelButton(nullptr);  // Can't cancel mid-upscale
+        progressDialog->setMinimumWidth(350);
+        progressDialog->show();
+        QApplication::processEvents();
+        
+        // Create upscaler and connect progress signal (use Qt::QueuedConnection for thread safety)
+        Upscaler* upscaler = new Upscaler();
+        connect(upscaler, &Upscaler::progressChanged, this, [progressDialog](int progress) {
+            if (progressDialog->maximum() == 0) {
+                progressDialog->setRange(0, 100);  // Switch to determinate
+            }
+            progressDialog->setValue(progress);
+            progressDialog->setLabelText(QString("AI Upscaling: %1% complete\n\nProcessing tiles...").arg(progress));
+        });
+        
+        // Run upscaling in background thread
+        QFutureWatcher<cv::Mat>* watcher = new QFutureWatcher<cv::Mat>(this);
+        
+        connect(watcher, &QFutureWatcher<cv::Mat>::finished, this, [this, watcher, progressDialog, upscaler, scale]() {
+            cv::Mat result = watcher->result();
+            
+            progressDialog->close();
+            progressDialog->deleteLater();
+            upscaler->deleteLater();
+            watcher->deleteLater();
+            
+            if (!result.empty()) {
+                m_historyManager->saveStateBeforeChange();
+                m_processor->getCurrentImage() = result;
+                m_processor->updateOriginalImage();  // Sync original so Repair tool works correctly
+                m_historyManager->saveState();
+                m_canvas->updateDisplay();
+                m_canvas->fitToScreen();
+                updateStatusBar();
+                statusBar()->showMessage(QString("Upscaled %1x to %2 x %3")
+                    .arg(scale)
+                    .arg(result.cols)
+                    .arg(result.rows), 3000);
+            } else {
+                QMessageBox::critical(this, "Error", "Failed to upscale image.");
+            }
+        });
+        
+        // Start the upscaling in background
+        QFuture<cv::Mat> future = QtConcurrent::run([upscaler, inputImage, model, scale]() {
+            return upscaler->upscale(inputImage, model, scale);
+        });
+        watcher->setFuture(future);
     }
 }
 
