@@ -33,6 +33,7 @@ public:
     
     // Image operations
     void resize(int newWidth, int newHeight);
+    void updateOriginalImage();  // Sync original with current (after upscale)
     void clear();
 
     // Tools - viewport bounded
