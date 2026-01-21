@@ -47,6 +47,12 @@ void ImageProcessor::resize(int newWidth, int newHeight) {
     updateLabCache();
 }
 
+void ImageProcessor::updateOriginalImage() {
+    if (m_currentImage.empty()) return;
+    m_originalImage = m_currentImage.clone();
+    updateLabCache();  // Sync LAB cache for Auto Color Remove tool
+}
+
 void ImageProcessor::clear() {
     // Properly release all memory
     m_currentImage.release();
@@ -160,16 +166,22 @@ void ImageProcessor::autoColorRemove(int x, int y, int tolerance, const QRect& v
 
     cv::Mat visited = cv::Mat::zeros(m_currentImage.rows, m_currentImage.cols, CV_8UC1);
 
-    std::stack<cv::Point> stack;
-    stack.push(cv::Point(x, y));
-
-    // Direct tolerance mapping - user value is the deltaE threshold
-    // deltaE 0-100 is typical range, we allow up to 255 for extreme cases
+    // Use vector instead of stack for better memory locality
+    std::vector<cv::Point> queue;
+    queue.reserve(10000);
+    queue.push_back(cv::Point(x, y));
+    
+    int queuePos = 0;
     float maxDeltaE = static_cast<float>(tolerance);
+    float maxDeltaESq = maxDeltaE * maxDeltaE; // Use squared distance to avoid sqrt
 
-    while (!stack.empty()) {
-        cv::Point pt = stack.top();
-        stack.pop();
+    // Pre-calculate seed values
+    float seedL = static_cast<float>(seedLab[0]);
+    float seedA = static_cast<float>(seedLab[1]);
+    float seedB = static_cast<float>(seedLab[2]);
+
+    while (queuePos < queue.size()) {
+        cv::Point pt = queue[queuePos++];
 
         if (pt.x < minX || pt.x > maxX || pt.y < minY || pt.y > maxY) continue;
         if (visited.at<uchar>(pt.y, pt.x)) continue;
@@ -179,22 +191,22 @@ void ImageProcessor::autoColorRemove(int x, int y, int tolerance, const QRect& v
         
         cv::Vec3b pixelLab = m_labImage.at<cv::Vec3b>(pt.y, pt.x);
         
-        // Standard Delta E calculation (CIE76)
-        float dL = static_cast<float>(pixelLab[0]) - seedLab[0];
-        float da = static_cast<float>(pixelLab[1]) - seedLab[1];
-        float db = static_cast<float>(pixelLab[2]) - seedLab[2];
-        float deltaE = std::sqrt(dL*dL + da*da + db*db);
+        // Fast squared deltaE (skip sqrt)
+        float dL = static_cast<float>(pixelLab[0]) - seedL;
+        float da = static_cast<float>(pixelLab[1]) - seedA;
+        float db = static_cast<float>(pixelLab[2]) - seedB;
+        float deltaESq = dL*dL + da*da + db*db;
         
-        if (deltaE > maxDeltaE) continue;
+        if (deltaESq > maxDeltaESq) continue;
 
         visited.at<uchar>(pt.y, pt.x) = 1;
         pixel[3] = 0; // Make transparent
 
         // Add neighbors (4-connected)
-        if (pt.x > minX) stack.push(cv::Point(pt.x - 1, pt.y));
-        if (pt.x < maxX) stack.push(cv::Point(pt.x + 1, pt.y));
-        if (pt.y > minY) stack.push(cv::Point(pt.x, pt.y - 1));
-        if (pt.y < maxY) stack.push(cv::Point(pt.x, pt.y + 1));
+        if (pt.x > minX) queue.push_back(cv::Point(pt.x - 1, pt.y));
+        if (pt.x < maxX) queue.push_back(cv::Point(pt.x + 1, pt.y));
+        if (pt.y > minY) queue.push_back(cv::Point(pt.x, pt.y - 1));
+        if (pt.y < maxY) queue.push_back(cv::Point(pt.x, pt.y + 1));
     }
     
     updateLabCache();
