@@ -84,6 +84,7 @@ private:
     QImage m_displayImage;
     QImage m_originalImage;
     QImage m_softenedImage;
+    QImage m_blurredOriginal;  // Cached blurred original for compare
     double m_zoom = 1.0;
     QPointF m_panOffset;
     BackgroundType m_bgType = Dark;
