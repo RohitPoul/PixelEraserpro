@@ -19,6 +19,7 @@ class CanvasWidget;
 class ImageProcessor;
 class ToolManager;
 class HistoryManager;
+class UpdateChecker;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -29,9 +30,11 @@ public:
 
 private slots:
     void openFile();
+    void discardImage();
     void quickExport();
     void exportFile();
     void resizeImage();
+    void upscaleImage();
     void undo();
     void redo();
     void zoomIn();
@@ -41,6 +44,10 @@ private slots:
     void toggleCompareOriginal();
     void toggleSidebar();
     void showShortcuts();
+    void checkForUpdates();
+    void onUpdateAvailable(const QString& version, const QString& downloadUrl, const QString& notes);
+    void onNoUpdateAvailable();
+    void onUpdateCheckFailed(const QString& error);
     void onToolChanged(int toolId);
     void onBackgroundChanged(int bgType);
     void onZoomChanged(double zoom);
@@ -67,6 +74,7 @@ private:
     ImageProcessor* m_processor;
     ToolManager* m_toolManager;
     HistoryManager* m_historyManager;
+    UpdateChecker* m_updateChecker;
 
     QDockWidget* m_toolDock;
     QSlider* m_brushSizeSlider;
