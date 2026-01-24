@@ -55,7 +55,7 @@ private:
     std::vector<HistoryState> m_history;
     int m_currentIndex = -1;
 
-    static constexpr int MAX_HISTORY = 30;
+    static constexpr int MAX_HISTORY = 10;
     static constexpr size_t MAX_MEMORY_MB = 2048; // Max 2GB for history (handles large images)
 
     void trimHistory();
