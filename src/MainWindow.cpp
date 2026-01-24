@@ -7,6 +7,8 @@
 #include "ResizeDialog.h"
 #include "UpscaleDialog.h"
 #include "Upscaler.h"
+#include "UpdateChecker.h"
+#include "Version.h"
 
 #include <QApplication>
 #include <QFileDialog>
@@ -25,14 +27,17 @@
 #include <QProgressDialog>
 #include <QtConcurrent>
 #include <QFutureWatcher>
+#include <QDesktopServices>
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
     , m_processor(new ImageProcessor())
     , m_toolManager(new ToolManager(this))
     , m_historyManager(new HistoryManager(this))
+    , m_updateChecker(new UpdateChecker(this))
 {
     setWindowTitle("PixelEraser Pro");
+    setWindowIcon(QIcon(":/icons/app-icon.png"));  // Set window icon explicitly
     resize(1400, 900);
     setMinimumSize(900, 600);
     setAcceptDrops(true);
@@ -51,6 +56,18 @@ MainWindow::MainWindow(QWidget* parent)
     setupStatusBar();
     setupShortcuts();
     connectSignals();
+    
+    // Setup update checker
+    m_updateChecker->setRepository("RohitPoul/PixelEraserPro");
+    m_updateChecker->setCurrentVersion(APP_VERSION);
+    connect(m_updateChecker, &UpdateChecker::updateAvailable, this, &MainWindow::onUpdateAvailable);
+    connect(m_updateChecker, &UpdateChecker::noUpdateAvailable, this, &MainWindow::onNoUpdateAvailable);
+    connect(m_updateChecker, &UpdateChecker::checkFailed, this, &MainWindow::onUpdateCheckFailed);
+    
+    // Check for updates silently on startup
+    QTimer::singleShot(3000, this, [this]() {
+        m_updateChecker->checkForUpdates(true);
+    });
 }
 
 MainWindow::~MainWindow() {
@@ -94,6 +111,7 @@ void MainWindow::setupMenuBar() {
     }, QKeySequence("Ctrl+N"));
     
     fileMenu->addAction("Open...", this, &MainWindow::openFile, QKeySequence("Ctrl+O"));
+    fileMenu->addAction("Discard Image", this, &MainWindow::discardImage, QKeySequence("Ctrl+D"));
     fileMenu->addSeparator();
     fileMenu->addAction("Export...", this, &MainWindow::quickExport, QKeySequence("Ctrl+E"));
     fileMenu->addSeparator();
@@ -140,12 +158,13 @@ void MainWindow::setupMenuBar() {
     // Help menu
     QMenu* helpMenu = menuBar()->addMenu("Help");
     helpMenu->addAction("Keyboard Shortcuts", this, &MainWindow::showShortcuts, QKeySequence("F1"));
+    helpMenu->addAction("Check for Updates...", this, &MainWindow::checkForUpdates);
     helpMenu->addSeparator();
     helpMenu->addAction("About", this, [this]() {
         QMessageBox::about(this, "About PixelEraser Pro",
-            "PixelEraser Pro v1.0.0\n\n"
+            QString("PixelEraser Pro v%1\n\n"
             "Professional background removal tool.\n"
-            "Built with Qt 6 and OpenCV.");
+            "Built with Qt 6 and OpenCV.").arg(APP_VERSION));
     });
 }
 
@@ -155,6 +174,7 @@ void MainWindow::setupToolBar() {
     toolbar->setFloatable(false);
 
     toolbar->addAction("Open", this, &MainWindow::openFile)->setToolTip("Open (Ctrl+O)");
+    toolbar->addAction("Discard", this, &MainWindow::discardImage)->setToolTip("Discard Image (Ctrl+D)");
     toolbar->addAction("Export", this, &MainWindow::quickExport)->setToolTip("Export (Ctrl+E)");
     
     toolbar->addSeparator();
@@ -577,6 +597,32 @@ void MainWindow::openFile() {
     }
 }
 
+void MainWindow::discardImage() {
+    if (!m_processor->hasImage()) {
+        return;
+    }
+    
+    // Confirm before discarding to prevent accidental clicks
+    QMessageBox msgBox(this);
+    msgBox.setWindowTitle("Discard Image?");
+    msgBox.setText("Are you sure you want to discard the current image?");
+    msgBox.setInformativeText("This will permanently remove the image without saving. This action cannot be undone.");
+    msgBox.setIcon(QMessageBox::Warning);
+    msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
+    msgBox.setDefaultButton(QMessageBox::Cancel);
+    
+    if (msgBox.exec() == QMessageBox::Yes) {
+        // Clear everything without asking to save
+        m_processor->clear();
+        m_historyManager->clear();
+        m_canvas->updateDisplay();
+        m_currentFilePath.clear();
+        setWindowTitle("PixelEraser Pro");
+        updateStatusBar();
+        statusBar()->showMessage("Image discarded", 2000);
+    }
+}
+
 void MainWindow::quickExport() {
     if (!m_processor->hasImage()) return;
     
@@ -727,10 +773,17 @@ void MainWindow::upscaleImage() {
             
             if (!result.empty()) {
                 m_historyManager->saveStateBeforeChange();
+                
+                // Replace current image with upscaled result
                 m_processor->getCurrentImage() = result;
-                m_processor->updateOriginalImage();  // Sync original so Repair tool works correctly
-                m_historyManager->saveState();
+                
+                // CRITICAL: Update original image AND LAB cache for accurate Auto Color Remove
+                m_processor->updateOriginalImage();
+                
+                // Force complete rebuild of display cache
                 m_canvas->updateDisplay();
+                
+                m_historyManager->saveState();
                 m_canvas->fitToScreen();
                 updateStatusBar();
                 statusBar()->showMessage(QString("Upscaled %1x to %2 x %3")
@@ -759,6 +812,7 @@ void MainWindow::showShortcuts() {
         "FILE\n"
         "  Ctrl+N            New\n"
         "  Ctrl+O            Open\n"
+        "  Ctrl+D            Discard Image\n"
         "  Ctrl+S            Save\n"
         "  Ctrl+Shift+S      Save As\n"
         "  Ctrl+E            Quick Export\n"
@@ -847,4 +901,53 @@ void MainWindow::updateStatusBar() {
 
     m_undoAction->setEnabled(m_historyManager->canUndo());
     m_redoAction->setEnabled(m_historyManager->canRedo());
+}
+
+void MainWindow::checkForUpdates() {
+    statusBar()->showMessage("Checking for updates...");
+    m_updateChecker->checkForUpdates(false);  // Not silent - show dialogs
+}
+
+void MainWindow::onUpdateAvailable(const QString& version, const QString& downloadUrl, const QString& notes) {
+    statusBar()->showMessage("Update available!", 3000);
+    
+    QString message = QString(
+        "<h3>A new version is available!</h3>"
+        "<p><b>Current version:</b> %1<br>"
+        "<b>New version:</b> %2</p>"
+    ).arg(APP_VERSION).arg(version);
+    
+    if (!notes.isEmpty()) {
+        // Truncate long release notes
+        QString truncatedNotes = notes.left(500);
+        if (notes.length() > 500) truncatedNotes += "...";
+        message += QString("<p><b>What's new:</b><br>%1</p>").arg(truncatedNotes.toHtmlEscaped().replace("\n", "<br>"));
+    }
+    
+    message += "<p>Would you like to download the update now?</p>";
+    
+    QMessageBox msgBox(this);
+    msgBox.setWindowTitle("Update Available");
+    msgBox.setTextFormat(Qt::RichText);
+    msgBox.setText(message);
+    msgBox.setIcon(QMessageBox::Information);
+    msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+    msgBox.setDefaultButton(QMessageBox::Yes);
+    
+    if (msgBox.exec() == QMessageBox::Yes) {
+        QDesktopServices::openUrl(QUrl(downloadUrl));
+    }
+}
+
+void MainWindow::onNoUpdateAvailable() {
+    statusBar()->showMessage("You're up to date!", 3000);
+    QMessageBox::information(this, "No Updates Available",
+        QString("You are running the latest version of PixelEraser Pro (v%1).").arg(APP_VERSION));
+}
+
+void MainWindow::onUpdateCheckFailed(const QString& error) {
+    statusBar()->showMessage("Update check failed", 3000);
+    QMessageBox::warning(this, "Update Check Failed",
+        QString("Could not check for updates.\n\nError: %1\n\n"
+                "Please check your internet connection and try again.").arg(error));
 }
