@@ -5,7 +5,17 @@ if(EXISTS "C:/vcpkg/scripts/buildsystems/vcpkg.cmake")
     set(CMAKE_TOOLCHAIN_FILE "C:/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
 endif()
 
-project(PixelEraserPro VERSION 1.0.0 LANGUAGES CXX)
+project(PixelEraserPro VERSION 1.0.1 LANGUAGES CXX)
+
+# Generate version header from template
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/Version.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/include/Version.h
+    @ONLY
+)
+
+# Generate version.txt for Inno Setup installer
+file(WRITE ${CMAKE_CURRENT_SOURCE_DIR}/version.txt "${PROJECT_VERSION}")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -32,6 +42,7 @@ set(SOURCES
     src/ResizeDialog.cpp
     src/Upscaler.cpp
     src/UpscaleDialog.cpp
+    src/UpdateChecker.cpp
 )
 
 # Header files
@@ -45,6 +56,7 @@ set(HEADERS
     include/ResizeDialog.h
     include/Upscaler.h
     include/UpscaleDialog.h
+    include/UpdateChecker.h
 )
 
 # Resources
@@ -68,6 +80,7 @@ add_executable(${PROJECT_NAME}
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_BINARY_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/libs
     ${OpenCV_INCLUDE_DIRS}
 )
