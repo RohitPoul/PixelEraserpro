@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QIcon>
 #include "MainWindow.h"
 
 int main(int argc, char* argv[]) {
@@ -10,6 +11,14 @@ int main(int argc, char* argv[]) {
     app.setApplicationName("PixelEraser Pro");
     app.setApplicationVersion("1.0.0");
     app.setOrganizationName("PixelEraser");
+    app.setDesktopFileName("PixelEraser.Pro"); // Linux/Unix
+    #ifdef Q_OS_WIN
+    // Set App User Model ID for taskbar icon
+    qputenv("QT_QPA_PLATFORM", "windows:darkmode=2");
+    // This helps Windows group the icon correctly
+    // But mostly, the taskbar icon comes from the window icon or the exe icon.
+    #endif
+    app.setWindowIcon(QIcon(":/icons/app-icon.png"));
 
     app.setStyle("Fusion");
     
