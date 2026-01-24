@@ -71,6 +71,19 @@ void CanvasWidget::rebuildFullCache() {
         
         m_originalImage = m_processor->getOriginalAsQImage();
         
+        // Pre-create blurred original for compare (cache it)
+        m_blurredOriginal = m_originalImage.scaled(
+            m_originalImage.width() / 4, 
+            m_originalImage.height() / 4,
+            Qt::KeepAspectRatio, 
+            Qt::SmoothTransformation
+        ).scaled(
+            m_originalImage.width(),
+            m_originalImage.height(),
+            Qt::KeepAspectRatio,
+            Qt::SmoothTransformation
+        );
+        
         // Reapply softening if active
         if (m_edgeSoftening > 0) {
             cv::Mat result = m_processor->applySoftening(m_processor->getCurrentImage(), m_edgeSoftening);
@@ -85,6 +98,7 @@ void CanvasWidget::rebuildFullCache() {
         m_displayImage = QImage();
         m_originalImage = QImage();
         m_softenedImage = QImage();
+        m_blurredOriginal = QImage();
         m_isLargeImage = false;
         m_renderedRegion = QRect();
     }
@@ -199,10 +213,14 @@ void CanvasWidget::renderVisibleArea() {
     visible.adjust(-margin, -margin, margin, margin);
     visible = visible.intersected(QRect(0, 0, m_processor->getWidth(), m_processor->getHeight()));
     
-    // Only render if this area hasn't been rendered yet
-    if (!m_renderedRegion.contains(visible)) {
+    // Render if this area hasn't been rendered yet OR if rendered region is empty (forced refresh)
+    if (m_renderedRegion.isEmpty() || !m_renderedRegion.contains(visible)) {
         m_processor->updateDisplayRegion(m_displayImage, visible);
-        m_renderedRegion = m_renderedRegion.united(visible);
+        if (m_renderedRegion.isEmpty()) {
+            m_renderedRegion = visible;
+        } else {
+            m_renderedRegion = m_renderedRegion.united(visible);
+        }
     }
 }
 
@@ -240,9 +258,14 @@ void CanvasWidget::paintEvent(QPaintEvent* event) {
     drawCheckerboard(painter, dirtyRect);
 
     if (!m_displayImage.isNull()) {
-        // For large images, ensure visible area is rendered
-        if (m_isLargeImage && !m_isPanning) {
-            renderVisibleArea();
+        // For large images, ensure visible area is rendered even during panning
+        // This prevents blank image bug
+        if (m_isLargeImage) {
+            QRect visible = getVisibleImageRect();
+            // If nothing has been rendered yet or visible area is not in rendered region
+            if (m_renderedRegion.isEmpty() || !m_renderedRegion.intersects(visible)) {
+                renderVisibleArea();
+            }
         }
         drawImage(painter, dirtyRect);
     }
@@ -307,23 +330,10 @@ void CanvasWidget::drawImage(QPainter& painter, const QRect& clipRect) {
     // Always draw the processed image first
     painter.drawImage(targetRect, *imgToDraw);
     
-    // If comparing, draw blurred original on top with opacity
-    if (m_showOriginal && !m_originalImage.isNull()) {
-        // Create blurred version of original for overlay
-        QImage blurredOriginal = m_originalImage.scaled(
-            m_originalImage.width() / 4, 
-            m_originalImage.height() / 4,
-            Qt::KeepAspectRatio, 
-            Qt::SmoothTransformation
-        ).scaled(
-            m_originalImage.width(),
-            m_originalImage.height(),
-            Qt::KeepAspectRatio,
-            Qt::SmoothTransformation
-        );
-        
+    // If comparing, draw cached blurred original on top with opacity
+    if (m_showOriginal && !m_blurredOriginal.isNull()) {
         painter.setOpacity(m_compareOpacity * 0.7);
-        painter.drawImage(targetRect, blurredOriginal);
+        painter.drawImage(targetRect, m_blurredOriginal);
         painter.setOpacity(1.0);
         
         // Show label
@@ -373,8 +383,8 @@ QPoint CanvasWidget::imageToScreen(const QPoint& imagePos) const {
 void CanvasWidget::mousePressEvent(QMouseEvent* event) {
     m_lastMousePos = event->pos();
 
-    // Space or H held = pan mode only
-    if (m_spaceHeld || m_showOriginal) {
+    // Space held = pan mode only
+    if (m_spaceHeld) {
         if (event->button() == Qt::LeftButton) {
             m_isPanning = true;
             setCursor(Qt::ClosedHandCursor);
@@ -442,8 +452,8 @@ void CanvasWidget::mouseMoveEvent(QMouseEvent* event) {
         }
     }
 
-    // Space or H held = always pan
-    if (m_spaceHeld || m_showOriginal) {
+    // Space held = always pan
+    if (m_spaceHeld) {
         if (m_isPanning) {
             QPoint delta = event->pos() - m_lastMousePos;
             m_panOffset += QPointF(delta);
@@ -503,9 +513,12 @@ void CanvasWidget::mouseReleaseEvent(QMouseEvent* event) {
 
     if (m_isPanning) {
         m_isPanning = false;
-        setCursor((m_spaceHeld || m_showOriginal) ? Qt::OpenHandCursor : Qt::ArrowCursor);
+        setCursor(m_spaceHeld ? Qt::OpenHandCursor : Qt::ArrowCursor);
         
+        // Force render visible area after panning stops
         if (m_isLargeImage) {
+            // Clear rendered region to force full re-render of visible area
+            m_renderedRegion = QRect();
             renderVisibleArea();
             update();
         }
@@ -564,8 +577,7 @@ void CanvasWidget::keyPressEvent(QKeyEvent* event) {
         update();
     }
     if (event->key() == Qt::Key_H && !event->isAutoRepeat()) {
-        m_showOriginal = true;
-        setCursor(Qt::OpenHandCursor);
+        m_showOriginal = !m_showOriginal;  // Toggle on/off
         update();
     }
     QWidget::keyPressEvent(event);
@@ -574,12 +586,6 @@ void CanvasWidget::keyPressEvent(QKeyEvent* event) {
 void CanvasWidget::keyReleaseEvent(QKeyEvent* event) {
     if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
         m_spaceHeld = false;
-        m_isPanning = false;
-        setCursor(Qt::ArrowCursor);
-        update();
-    }
-    if (event->key() == Qt::Key_H && !event->isAutoRepeat()) {
-        m_showOriginal = false;
         m_isPanning = false;
         setCursor(Qt::ArrowCursor);
         update();
