@@ -5,7 +5,9 @@
 #include <QNetworkReply>
 #include <QFile>
 #include <QEventLoop>
+#include <QMutexLocker>
 #include <QDebug>
+#include <thread>
 #include <onnxruntime_cxx_api.h>
 
 /*
@@ -26,7 +28,42 @@ Upscaler::Upscaler(QObject* parent)
 }
 
 Upscaler::~Upscaler() {
+    requestCancel();
     unloadModel();
+}
+
+void Upscaler::setPaused(bool paused) {
+    QMutexLocker locker(&m_pauseMutex);
+    m_paused.store(paused);
+    if (!paused) {
+        m_pauseCond.wakeAll();
+    }
+}
+
+void Upscaler::requestCancel() {
+    QMutexLocker locker(&m_pauseMutex);
+    m_cancelled.store(true);
+    m_paused.store(false);
+    m_pauseCond.wakeAll();
+}
+
+void Upscaler::resetControlFlags() {
+    QMutexLocker locker(&m_pauseMutex);
+    m_cancelled.store(false);
+    m_paused.store(false);
+}
+
+bool Upscaler::waitIfPaused() {
+    QMutexLocker locker(&m_pauseMutex);
+    while (m_paused.load() && !m_cancelled.load()) {
+        locker.unlock();
+        emit statusChanged("Paused — Click Resume to continue");
+        locker.relock();
+        if (m_paused.load() && !m_cancelled.load()) {
+            m_pauseCond.wait(&m_pauseMutex);
+        }
+    }
+    return !m_cancelled.load();
 }
 
 QString Upscaler::getModelPath(Model model) {
@@ -161,8 +198,12 @@ struct Upscaler::OnnxSession {
     OnnxSession() {
         // Use ERROR level to suppress all those schema warnings
         env = std::make_shared<Ort::Env>(ORT_LOGGING_LEVEL_ERROR, "RealESRGAN");
-        sessionOptions.SetIntraOpNumThreads(4);
+        int numThreads = static_cast<int>(std::max(4u, std::thread::hardware_concurrency()));
+        sessionOptions.SetIntraOpNumThreads(numThreads);
         sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+        // Prevent ONNX Runtime from hoarding multi-GB arena allocations across tiles
+        sessionOptions.DisableCpuMemArena();
+        sessionOptions.DisableMemPattern();
     }
 };
 
@@ -255,6 +296,7 @@ void Upscaler::unloadModel() {
 }
 
 cv::Mat Upscaler::upscale(const cv::Mat& input, Model model, int scale) {
+    resetControlFlags();
     qDebug() << "=== UPSCALE START ===";
     qDebug() << "Model:" << getModelName(model);
     qDebug() << "Scale:" << scale;
@@ -326,25 +368,32 @@ cv::Mat Upscaler::upscale(const cv::Mat& input, Model model, int scale) {
         int currentTile = 0;
         
         qDebug() << "Processing" << totalTiles << "tiles...";
-        
+        std::vector<float> inputTensorValues; // Reused across tiles (zero per-tile heap churn!)
+        auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+
         for (int ty = 0; ty < inputFloat.rows; ty += tileSize) {
             for (int tx = 0; tx < inputFloat.cols; tx += tileSize) {
+                if (!waitIfPaused()) {
+                    qDebug() << "Upscale cancelled by user";
+                    unloadModel();
+                    return cv::Mat();
+                }
+
                 currentTile++;
                 int progress = (currentTile * 100) / totalTiles;
                 emit progressChanged(progress);
-                
-                // Calculate tile boundaries with padding
+                emit statusChanged(QString("Upscaling tile %1 / %2 (%3× Real-ESRGAN)...")
+                    .arg(currentTile).arg(totalTiles).arg(scale));
+
                 int tileY = std::max(0, ty - tilePadding);
                 int tileX = std::max(0, tx - tilePadding);
                 int tileEndY = std::min(inputFloat.rows, ty + tileSize + tilePadding);
                 int tileEndX = std::min(inputFloat.cols, tx + tileSize + tilePadding);
                 int tileH = tileEndY - tileY;
                 int tileW = tileEndX - tileX;
-                
-                // Extract tile
+
                 cv::Mat tile = inputFloat(cv::Rect(tileX, tileY, tileW, tileH)).clone();
-                
-                // Pad tile to ensure dimensions are even (required by Real-ESRGAN pixel-shuffle)
+
                 int padH = (tileH % 2 != 0) ? 1 : 0;
                 int padW = (tileW % 2 != 0) ? 1 : 0;
                 if (padH > 0 || padW > 0) {
@@ -352,27 +401,18 @@ cv::Mat Upscaler::upscale(const cv::Mat& input, Model model, int scale) {
                     tileH += padH;
                     tileW += padW;
                 }
-                
-                // Convert BGR to RGB
-                cv::Mat tileRGB;
-                cv::cvtColor(tile, tileRGB, cv::COLOR_BGR2RGB);
-                
-                // Create input tensor [1, 3, H, W] - NCHW format
+
                 std::vector<int64_t> inputShape = {1, 3, tileH, tileW};
-                std::vector<float> inputTensorValues(3 * tileH * tileW);
-                
-                // Convert HWC to CHW
-                for (int c = 0; c < 3; ++c) {
-                    for (int h = 0; h < tileH; ++h) {
-                        for (int w = 0; w < tileW; ++w) {
-                            inputTensorValues[c * tileH * tileW + h * tileW + w] = 
-                                tileRGB.at<cv::Vec3f>(h, w)[c];
-                        }
-                    }
-                }
-                
-                // Create input tensor
-                auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+                size_t planeSize = static_cast<size_t>(tileH) * tileW;
+                inputTensorValues.resize(3 * planeSize);
+
+                std::vector<cv::Mat> chwPlanes = {
+                    cv::Mat(tileH, tileW, CV_32FC1, inputTensorValues.data() + 2 * planeSize),
+                    cv::Mat(tileH, tileW, CV_32FC1, inputTensorValues.data() + 1 * planeSize),
+                    cv::Mat(tileH, tileW, CV_32FC1, inputTensorValues.data() + 0 * planeSize)
+                };
+                cv::split(tile, chwPlanes);
+
                 Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
                     memoryInfo,
                     inputTensorValues.data(),
@@ -380,12 +420,7 @@ cv::Mat Upscaler::upscale(const cv::Mat& input, Model model, int scale) {
                     inputShape.data(),
                     inputShape.size()
                 );
-                
-                // Run inference
-                qDebug() << "Running ONNX inference for tile" << currentTile << "/" << totalTiles;
-                qDebug() << "  Input shape:" << inputShape[0] << "x" << inputShape[1] << "x" << inputShape[2] << "x" << inputShape[3];
-                qDebug() << "  Input tensor size:" << inputTensorValues.size();
-                
+
                 auto outputTensors = m_session->session->Run(
                     Ort::RunOptions{nullptr},
                     m_session->inputNames.data(),
@@ -394,29 +429,22 @@ cv::Mat Upscaler::upscale(const cv::Mat& input, Model model, int scale) {
                     m_session->outputNames.data(),
                     1
                 );
-                
-                qDebug() << "  Inference completed for tile" << currentTile;
-                
-                // Get output tensor
+
                 float* outputData = outputTensors[0].GetTensorMutableData<float>();
                 auto outputShape = outputTensors[0].GetTensorTypeAndShapeInfo().GetShape();
-                
-                qDebug() << "  Output shape:" << outputShape[0] << "x" << outputShape[1] << "x" << outputShape[2] << "x" << outputShape[3];
                 
                 int outTileH = static_cast<int>(outputShape[2]);
                 int outTileW = static_cast<int>(outputShape[3]);
                 
-                // Convert CHW to HWC and RGB to BGR
-                cv::Mat outputTile(outTileH, outTileW, CV_32FC3);
-                for (int c = 0; c < 3; ++c) {
-                    for (int h = 0; h < outTileH; ++h) {
-                        for (int w = 0; w < outTileW; ++w) {
-                            // RGB to BGR: swap channel 0 and 2
-                            outputTile.at<cv::Vec3f>(h, w)[2 - c] = 
-                                outputData[c * outTileH * outTileW + h * outTileW + w];
-                        }
-                    }
-                }
+                // Fast SIMD merge of CHW RGB output planes directly to HWC BGR
+                size_t outPlaneSize = static_cast<size_t>(outTileH) * outTileW;
+                std::vector<cv::Mat> outBgrPlanes = {
+                    cv::Mat(outTileH, outTileW, CV_32FC1, outputData + 2 * outPlaneSize), // B (plane 2)
+                    cv::Mat(outTileH, outTileW, CV_32FC1, outputData + 1 * outPlaneSize), // G (plane 1)
+                    cv::Mat(outTileH, outTileW, CV_32FC1, outputData + 0 * outPlaneSize)  // R (plane 0)
+                };
+                cv::Mat outputTile;
+                cv::merge(outBgrPlanes, outputTile);
                 
                 // Clip values to [0, 1]
                 cv::threshold(outputTile, outputTile, 1.0, 1.0, cv::THRESH_TRUNC);
