@@ -1,8 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 
-# vcpkg toolchain - adjust path if your vcpkg is elsewhere
-if(EXISTS "C:/vcpkg/scripts/buildsystems/vcpkg.cmake")
-    set(CMAKE_TOOLCHAIN_FILE "C:/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
+# vcpkg toolchain - automatically detect from VCPKG_ROOT env var or standard C:/vcpkg
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    if(DEFINED ENV{VCPKG_ROOT} AND EXISTS "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
+        set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
+    elseif(EXISTS "C:/vcpkg/scripts/buildsystems/vcpkg.cmake")
+        set(CMAKE_TOOLCHAIN_FILE "C:/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
+    endif()
 endif()
 
 project(PixelEraserPro VERSION 1.0.1 LANGUAGES CXX)
