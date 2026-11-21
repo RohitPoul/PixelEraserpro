@@ -1,10 +1,18 @@
-# Build directories
+# Build directories & CMake generated files
 build/
 build-*/
 cmake-build-*/
 out/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+version.txt
 
-# Qt Creator
+# Qt Creator & Qt Tools
 *.pro.user
 *.pro.user.*
 *.qbs.user
@@ -17,16 +25,26 @@ ui_*.h
 .qmake.stash
 CMakeLists.txt.user*
 .qtcreator/
+.qtc_clangd/
+*_autogen/
 
-# IDE
+# IDE & Local Agent / Environment Configs
 .vs/
 .vscode/
 *.swp
 *.swo
 *~
 .idea/
+.claude/
+.cursor/
+.gemini/
+.planning/
+*.local
+*.user
+.env
+.env.*
 
-# Compiled
+# Compiled Binaries, Debug Symbols & Logs
 *.o
 *.obj
 *.exe
@@ -36,13 +54,28 @@ CMakeLists.txt.user*
 *.a
 *.lib
 *.pdb
+*.ilk
+*.exp
+*.log
+*.tlog
+*.idb
 
-# OS
+# AI Models (never commit large weights)
+*.onnx
+*.pth
+*.pt
+*.safetensors
+models/
+
+# OS & Temp files
 .DS_Store
 Thumbs.db
 desktop.ini
+*.tmp
+*.bak
+*.orig
 
-# Deployment
+# Deployment & Installers
 *_Portable/
 *.zip
 *_Setup_*.exe
