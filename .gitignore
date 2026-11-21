@@ -1,10 +1,15 @@
-# Build directories & CMake generated files
+# ============================================================================
+# Build Directories & CMake Generated Files
+# ============================================================================
 build/
 build-*/
 cmake-build-*/
+Desktop_Qt_*/
 out/
+vcpkg_installed/
 CMakeFiles/
 CMakeCache.txt
+CMakeUserPresets.json
 cmake_install.cmake
 Makefile
 compile_commands.json
@@ -12,39 +17,113 @@ CTestTestfile.cmake
 _deps/
 version.txt
 
-# Qt Creator & Qt Tools
-*.pro.user
-*.pro.user.*
-*.qbs.user
-*.qbs.user.*
+# ============================================================================
+# Qt Creator & Qt Tooling Artifacts
+# ============================================================================
+*.pro.user*
+*.qbs.user*
+CMakeLists.txt.user*
+.qtcreator/
+.qtc_clangd/
+qtc-cmake-presets*
+qtcsettings.cmake
+*_autogen/
 *.moc
 moc_*.cpp
 qrc_*.cpp
 ui_*.h
 *.autosave
 .qmake.stash
-CMakeLists.txt.user*
-.qtcreator/
-.qtc_clangd/
-*_autogen/
 
-# IDE & Local Agent / Environment Configs
+# ============================================================================
+# IDEs, AI Agents, Local Settings & Secrets
+# ============================================================================
 .vs/
 .vscode/
-*.swp
-*.swo
-*~
 .idea/
 .claude/
 .cursor/
 .gemini/
 .planning/
+*.swp
+*.swo
+*~
 *.local
+*.local.*
 *.user
+*.ini
+*settings*.json
 .env
 .env.*
+*.key
+*.pem
+*.token
+secrets*
 
-# Compiled Binaries, Debug Symbols & Logs
+# ============================================================================
+# Python Environments & Ad-Hoc Inference / Test Scripts
+# ============================================================================
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+infer_*.py
+convert_*.py
+export_*.py
+test_*.py
+
+# ============================================================================
+# Personal Images, Training Masks, Cutouts & Datasets (Keep /resources/ only)
+# ============================================================================
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.bmp
+*.tif
+*.tiff
+*.gif
+*.ico
+*.psd
+*.raw
+!resources/
+!resources/**
+!resources/**/*
+*_cutout.*
+*_mask.*
+datasets/
+masks/
+cutouts/
+samples/
+test_images/
+inputs/
+outputs/
+exports/
+notes/
+
+# ============================================================================
+# AI Model Weights, Checkpoints & Caches (never commit weights)
+# ============================================================================
+*.onnx
+*.onnx.data
+*.pth
+*.pt
+*.safetensors
+*.ckpt
+*.bin
+*.h5
+*.pb
+*.tflite
+*.mlmodel
+models/
+checkpoints/
+.cache/
+.huggingface/
+
+# ============================================================================
+# Compiled Binaries, Debug Symbols, Crash Dumps & Logs
+# ============================================================================
 *.o
 *.obj
 *.exe
@@ -56,26 +135,31 @@ CMakeLists.txt.user*
 *.pdb
 *.ilk
 *.exp
-*.log
 *.tlog
 *.idb
+*.pch
+*.ipch
+*.sdf
+*.opensdf
+*.log
+*.dmp
+*.mdmp
+*.stackdump
 
-# AI Models (never commit large weights)
-*.onnx
-*.pth
-*.pt
-*.safetensors
-models/
-
-# OS & Temp files
+# ============================================================================
+# OS Artifacts, Temp Files & Deployment Packages
+# ============================================================================
 .DS_Store
 Thumbs.db
+ehthumbs.db
 desktop.ini
+Desktop.ini
 *.tmp
 *.bak
 *.orig
-
-# Deployment & Installers
 *_Portable/
 *.zip
+*.7z
+*.tar.gz
 *_Setup_*.exe
+*.msi
