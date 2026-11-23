@@ -1,17 +1,16 @@
 #ifndef RESIZEDIALOG_H
 #define RESIZEDIALOG_H
 
-#include <QDialog>
 #include <QSpinBox>
-#include <QCheckBox>
 #include <QLabel>
+#include "GlassWidgets.h"
 
-class ResizeDialog : public QDialog {
+class ResizeDialog : public GlassModalDialog {
     Q_OBJECT
 
 public:
     explicit ResizeDialog(int currentWidth, int currentHeight, QWidget* parent = nullptr);
-    
+
     int getNewWidth() const { return m_newWidth; }
     int getNewHeight() const { return m_newHeight; }
 
@@ -22,7 +21,7 @@ private slots:
 
 private:
     void setupUI();
-    
+
     int m_originalWidth;
     int m_originalHeight;
     int m_newWidth;
@@ -30,11 +29,12 @@ private:
     double m_aspectRatio;
     bool m_lockAspect = true;
     bool m_updating = false;
-    
-    QSpinBox* m_widthSpin;
-    QSpinBox* m_heightSpin;
-    QCheckBox* m_lockCheck;
-    QLabel* m_previewLabel;
+
+    QSpinBox* m_widthSpin = nullptr;
+    QSpinBox* m_heightSpin = nullptr;
+    GlassToggleSwitch* m_lockSwitch = nullptr;
+    LiquidGlassTabBar* m_presetTabBar = nullptr;
+    QLabel* m_previewLabel = nullptr;
 };
 
 #endif // RESIZEDIALOG_H

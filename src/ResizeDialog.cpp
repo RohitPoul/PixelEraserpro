@@ -2,138 +2,156 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
-#include <QGroupBox>
-#include <QPushButton>
-#include <QLabel>
+#include <algorithm>
 
 ResizeDialog::ResizeDialog(int currentWidth, int currentHeight, QWidget* parent)
-    : QDialog(parent)
+    : GlassModalDialog("Resize Canvas", parent)
     , m_originalWidth(currentWidth)
     , m_originalHeight(currentHeight)
     , m_newWidth(currentWidth)
     , m_newHeight(currentHeight)
-    , m_aspectRatio(static_cast<double>(currentWidth) / currentHeight)
+    , m_aspectRatio(static_cast<double>(currentWidth) / std::max(1, currentHeight))
 {
-    setWindowTitle("Resize Image");
-    setMinimumSize(400, 380);
-    setModal(true);
+    setMinimumWidth(480);
     setupUI();
 }
 
 void ResizeDialog::setupUI() {
-    QVBoxLayout* mainLayout = new QVBoxLayout(this);
-    mainLayout->setSpacing(20);
-    mainLayout->setContentsMargins(24, 24, 24, 24);
+    const GlassTheme& th = ThemeManager::instance().current();
+    QVBoxLayout* root = contentLayout();
 
-    // Current size info
-    QLabel* currentLabel = new QLabel(QString("Current Size: %1 × %2 pixels")
-        .arg(m_originalWidth).arg(m_originalHeight));
-    currentLabel->setStyleSheet("color: #aaa; font-size: 13px;");
-    mainLayout->addWidget(currentLabel);
+    // Header Liquid Glass Card
+    GlassPanel* heroCard = new GlassPanel();
+    heroCard->setCornerRadius(20.0);
+    heroCard->setAccentGlow(true);
+    QVBoxLayout* heroLay = new QVBoxLayout(heroCard);
+    heroLay->setContentsMargins(18, 15, 18, 15);
+    heroLay->setSpacing(6);
 
-    // Size inputs
-    QGroupBox* sizeGroup = new QGroupBox("New Size");
-    QGridLayout* sizeLayout = new QGridLayout(sizeGroup);
-    sizeLayout->setSpacing(12);
-    sizeLayout->setContentsMargins(16, 20, 16, 16);
-    
-    QLabel* widthLabel = new QLabel("Width:");
-    widthLabel->setMinimumWidth(60);
-    sizeLayout->addWidget(widthLabel, 0, 0);
-    
+    QHBoxLayout* hdrRow = new QHBoxLayout();
+    QLabel* titleLbl = new QLabel("Resize Canvas");
+    titleLbl->setStyleSheet("color: #ffffff; font-size: 17px; font-weight: 700; background: transparent;");
+
+    QLabel* badgeLbl = new QLabel("Lanczos4 · High Precision");
+    badgeLbl->setStyleSheet(QString(
+        "color: %1; font-size: 11px; font-weight: 700; "
+        "background-color: rgba(%2,%3,%4,%5); border: 1px solid rgba(%6,%7,%8,%9); "
+        "border-radius: 10px; padding: 3px 10px;"
+    ).arg(th.badgeText.name())
+     .arg(th.badgeBg.red()).arg(th.badgeBg.green()).arg(th.badgeBg.blue()).arg(th.badgeBg.alpha())
+     .arg(th.badgeBorder.red()).arg(th.badgeBorder.green()).arg(th.badgeBorder.blue()).arg(th.badgeBorder.alpha()));
+    hdrRow->addWidget(titleLbl);
+    hdrRow->addStretch();
+    hdrRow->addWidget(badgeLbl);
+    heroLay->addLayout(hdrRow);
+
+    QLabel* curLbl = new QLabel(QString("Original Canvas: %1 × %2 px").arg(m_originalWidth).arg(m_originalHeight));
+    curLbl->setStyleSheet("color: #b4c0d2; font-size: 12px; background: transparent;");
+    heroLay->addWidget(curLbl);
+    root->addWidget(heroCard);
+
+    // Dimensions Liquid Glass Card
+    GlassPanel* dimCard = new GlassPanel();
+    dimCard->setCornerRadius(20.0);
+    QVBoxLayout* dimLay = new QVBoxLayout(dimCard);
+    dimLay->setContentsMargins(18, 16, 18, 16);
+    dimLay->setSpacing(14);
+
+    QGridLayout* grid = new QGridLayout();
+    grid->setHorizontalSpacing(14);
+    grid->setVerticalSpacing(10);
+
+    QLabel* wLbl = new QLabel("Width");
+    wLbl->setStyleSheet("color: #cfd8e8; font-weight: 600; background: transparent;");
     m_widthSpin = new QSpinBox();
     m_widthSpin->setRange(1, 16384);
     m_widthSpin->setValue(m_originalWidth);
     m_widthSpin->setSuffix(" px");
-    m_widthSpin->setMinimumWidth(120);
-    m_widthSpin->setMaximumWidth(150);
-    sizeLayout->addWidget(m_widthSpin, 0, 1);
-    
-    QLabel* heightLabel = new QLabel("Height:");
-    sizeLayout->addWidget(heightLabel, 1, 0);
-    
+    m_widthSpin->setMinimumHeight(34);
+
+    QLabel* hLbl = new QLabel("Height");
+    hLbl->setStyleSheet("color: #cfd8e8; font-weight: 600; background: transparent;");
     m_heightSpin = new QSpinBox();
     m_heightSpin->setRange(1, 16384);
     m_heightSpin->setValue(m_originalHeight);
     m_heightSpin->setSuffix(" px");
-    m_heightSpin->setMinimumWidth(120);
-    m_heightSpin->setMaximumWidth(150);
-    sizeLayout->addWidget(m_heightSpin, 1, 1);
-    
-    // Add stretch to push spinboxes left
-    sizeLayout->setColumnStretch(2, 1);
-    
-    m_lockCheck = new QCheckBox("Lock aspect ratio");
-    m_lockCheck->setChecked(true);
-    sizeLayout->addWidget(m_lockCheck, 2, 0, 1, 3);
-    
-    mainLayout->addWidget(sizeGroup);
+    m_heightSpin->setMinimumHeight(34);
 
-    // Quick presets
-    QGroupBox* presetGroup = new QGroupBox("Quick Resize");
-    QHBoxLayout* presetLayout = new QHBoxLayout(presetGroup);
-    presetLayout->setSpacing(8);
-    presetLayout->setContentsMargins(16, 20, 16, 16);
-    
-    QPushButton* btn25 = new QPushButton("25%");
-    QPushButton* btn50 = new QPushButton("50%");
-    QPushButton* btn75 = new QPushButton("75%");
-    QPushButton* btn150 = new QPushButton("150%");
-    QPushButton* btn200 = new QPushButton("200%");
-    
-    QString presetStyle = "QPushButton { padding: 8px 12px; min-width: 50px; }";
-    btn25->setStyleSheet(presetStyle);
-    btn50->setStyleSheet(presetStyle);
-    btn75->setStyleSheet(presetStyle);
-    btn150->setStyleSheet(presetStyle);
-    btn200->setStyleSheet(presetStyle);
-    
-    presetLayout->addWidget(btn25);
-    presetLayout->addWidget(btn50);
-    presetLayout->addWidget(btn75);
-    presetLayout->addWidget(btn150);
-    presetLayout->addWidget(btn200);
-    
-    mainLayout->addWidget(presetGroup);
+    grid->addWidget(wLbl, 0, 0);
+    grid->addWidget(m_widthSpin, 0, 1);
+    grid->addWidget(hLbl, 1, 0);
+    grid->addWidget(m_heightSpin, 1, 1);
+    grid->setColumnStretch(1, 1);
+    dimLay->addLayout(grid);
 
-    // Preview
-    m_previewLabel = new QLabel(QString("Output: %1 × %2 pixels").arg(m_newWidth).arg(m_newHeight));
-    m_previewLabel->setStyleSheet("font-size: 14px; font-weight: bold; color: #70a0d0; padding: 12px;");
+    QHBoxLayout* lockRow = new QHBoxLayout();
+    QLabel* lockLbl = new QLabel("Lock Aspect Ratio");
+    lockLbl->setStyleSheet("color: #dfe6f2; font-size: 12px; font-weight: 600; background: transparent;");
+    m_lockSwitch = new GlassToggleSwitch();
+    m_lockSwitch->setChecked(true);
+    lockRow->addWidget(lockLbl);
+    lockRow->addStretch();
+    lockRow->addWidget(m_lockSwitch);
+    dimLay->addLayout(lockRow);
+
+    // Quick Scale Liquid Glass Sliding Tab Bar
+    QLabel* quickLbl = new QLabel("Quick Scale");
+    quickLbl->setStyleSheet("color: #b4c0d2; font-size: 11px; font-weight: 700; background: transparent;");
+    dimLay->addWidget(quickLbl);
+
+    GlassPanel* tabWrap = new GlassPanel();
+    tabWrap->setCornerRadius(19.0);
+    tabWrap->setSubSurface(true);
+    tabWrap->setElevated(false);
+    tabWrap->setFixedHeight(38);
+    QHBoxLayout* twLay = new QHBoxLayout(tabWrap);
+    twLay->setContentsMargins(3, 2, 3, 2);
+
+    m_presetTabBar = new LiquidGlassTabBar();
+    m_presetTabBar->setPillHeight(34);
+    m_presetTabBar->addTab(25, "25%");
+    m_presetTabBar->addTab(50, "50%");
+    m_presetTabBar->addTab(75, "75%");
+    m_presetTabBar->addTab(100, "100%");
+    m_presetTabBar->addTab(150, "150%");
+    m_presetTabBar->addTab(200, "200%");
+    m_presetTabBar->setCurrentId(100, false);
+    twLay->addWidget(m_presetTabBar);
+    dimLay->addWidget(tabWrap);
+
+    m_previewLabel = new QLabel(QString("Output Resolution: %1 × %2 px").arg(m_newWidth).arg(m_newHeight));
     m_previewLabel->setAlignment(Qt::AlignCenter);
-    mainLayout->addWidget(m_previewLabel);
+    m_previewLabel->setStyleSheet(QString(
+        "color: %1; font-size: 12px; font-weight: 700; "
+        "background-color: rgba(%2,%3,%4,%5); border: 1px solid rgba(%6,%7,%8,%9); "
+        "border-radius: 12px; padding: 9px 14px;"
+    ).arg(th.badgeText.name())
+     .arg(th.badgeBg.red()).arg(th.badgeBg.green()).arg(th.badgeBg.blue()).arg(th.badgeBg.alpha())
+     .arg(th.badgeBorder.red()).arg(th.badgeBorder.green()).arg(th.badgeBorder.blue()).arg(th.badgeBorder.alpha()));
+    dimLay->addWidget(m_previewLabel);
+    root->addWidget(dimCard);
 
-    mainLayout->addStretch();
+    // Bottom Actions
+    QHBoxLayout* btnRow = new QHBoxLayout();
+    btnRow->setSpacing(10);
+    btnRow->addStretch();
 
-    // Buttons
-    QHBoxLayout* buttonLayout = new QHBoxLayout();
-    buttonLayout->setSpacing(12);
-    buttonLayout->addStretch();
-    
-    QPushButton* cancelBtn = new QPushButton("Cancel");
-    cancelBtn->setMinimumWidth(100);
-    cancelBtn->setMinimumHeight(36);
-    
-    QPushButton* resizeBtn = new QPushButton("Resize");
+    GlassButton* cancelBtn = new GlassButton("Cancel", GlassButton::Ghost);
+    cancelBtn->setMinimumSize(100, 38);
+
+    GlassButton* resizeBtn = new GlassButton("Apply Resize", GlassButton::Primary);
+    resizeBtn->setIconName("resize");
     resizeBtn->setDefault(true);
-    resizeBtn->setMinimumWidth(100);
-    resizeBtn->setMinimumHeight(36);
-    resizeBtn->setStyleSheet("background-color: #506090; font-weight: bold;");
-    
-    buttonLayout->addWidget(cancelBtn);
-    buttonLayout->addWidget(resizeBtn);
-    mainLayout->addLayout(buttonLayout);
+    resizeBtn->setMinimumSize(148, 38);
 
-    // Connections
+    btnRow->addWidget(cancelBtn);
+    btnRow->addWidget(resizeBtn);
+    root->addLayout(btnRow);
+
     connect(m_widthSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ResizeDialog::onWidthChanged);
     connect(m_heightSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ResizeDialog::onHeightChanged);
-    connect(m_lockCheck, &QCheckBox::toggled, [this](bool checked) { m_lockAspect = checked; });
-    
-    connect(btn25, &QPushButton::clicked, [this]() { onPresetClicked(25); });
-    connect(btn50, &QPushButton::clicked, [this]() { onPresetClicked(50); });
-    connect(btn75, &QPushButton::clicked, [this]() { onPresetClicked(75); });
-    connect(btn150, &QPushButton::clicked, [this]() { onPresetClicked(150); });
-    connect(btn200, &QPushButton::clicked, [this]() { onPresetClicked(200); });
-    
+    connect(m_lockSwitch, &QAbstractButton::toggled, this, [this](bool checked) { m_lockAspect = checked; });
+    connect(m_presetTabBar, &LiquidGlassTabBar::tabSelected, this, &ResizeDialog::onPresetClicked);
     connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
     connect(resizeBtn, &QPushButton::clicked, this, &QDialog::accept);
 }
@@ -141,41 +159,41 @@ void ResizeDialog::setupUI() {
 void ResizeDialog::onWidthChanged(int value) {
     if (m_updating) return;
     m_updating = true;
-    
+
     m_newWidth = value;
     if (m_lockAspect) {
-        m_newHeight = static_cast<int>(value / m_aspectRatio);
+        m_newHeight = std::max(1, static_cast<int>(value / m_aspectRatio));
         m_heightSpin->setValue(m_newHeight);
     } else {
         m_newHeight = m_heightSpin->value();
     }
-    
-    m_previewLabel->setText(QString("Output: %1 × %2 pixels").arg(m_newWidth).arg(m_newHeight));
+
+    m_previewLabel->setText(QString("Output Resolution: %1 × %2 px").arg(m_newWidth).arg(m_newHeight));
     m_updating = false;
 }
 
 void ResizeDialog::onHeightChanged(int value) {
     if (m_updating) return;
     m_updating = true;
-    
+
     m_newHeight = value;
     if (m_lockAspect) {
-        m_newWidth = static_cast<int>(value * m_aspectRatio);
+        m_newWidth = std::max(1, static_cast<int>(value * m_aspectRatio));
         m_widthSpin->setValue(m_newWidth);
     } else {
         m_newWidth = m_widthSpin->value();
     }
-    
-    m_previewLabel->setText(QString("Output: %1 × %2 pixels").arg(m_newWidth).arg(m_newHeight));
+
+    m_previewLabel->setText(QString("Output Resolution: %1 × %2 px").arg(m_newWidth).arg(m_newHeight));
     m_updating = false;
 }
 
 void ResizeDialog::onPresetClicked(int percent) {
     m_updating = true;
-    m_newWidth = m_originalWidth * percent / 100;
-    m_newHeight = m_originalHeight * percent / 100;
+    m_newWidth = std::max(1, m_originalWidth * percent / 100);
+    m_newHeight = std::max(1, m_originalHeight * percent / 100);
     m_widthSpin->setValue(m_newWidth);
     m_heightSpin->setValue(m_newHeight);
-    m_previewLabel->setText(QString("Output: %1 × %2 pixels").arg(m_newWidth).arg(m_newHeight));
+    m_previewLabel->setText(QString("Output Resolution: %1 × %2 px").arg(m_newWidth).arg(m_newHeight));
     m_updating = false;
 }

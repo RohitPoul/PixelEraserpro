@@ -7,6 +7,22 @@
 #include <QString>
 #include <QVersionNumber>
 
+struct UpdateInfo {
+    QString version;
+    QString releaseTitle;
+    QString releaseNotes;
+    QString releasePageUrl;
+    QString installerUrl;
+    QString installerName;
+    qint64 installerSize = 0;
+    QString portableUrl;
+    QString portableName;
+    qint64 portableSize = 0;
+
+    bool hasInstaller() const { return !installerUrl.isEmpty(); }
+    bool hasPortable() const { return !portableUrl.isEmpty(); }
+};
+
 class UpdateChecker : public QObject
 {
     Q_OBJECT
@@ -15,24 +31,16 @@ public:
     explicit UpdateChecker(QObject *parent = nullptr);
     ~UpdateChecker();
 
-    // Set the GitHub repository (format: "owner/repo")
     void setRepository(const QString &repo);
-    
-    // Set current app version
     void setCurrentVersion(const QString &version);
-    
-    // Check for updates (async)
     void checkForUpdates(bool silent = false);
-    
-    // Get download URL for latest release
+
     QString getDownloadUrl() const { return m_downloadUrl; }
-    
-    // Get latest version string
     QString getLatestVersion() const { return m_latestVersion; }
+    const UpdateInfo& latestUpdateInfo() const { return m_latestInfo; }
 
 signals:
-    // Emitted when update check completes
-    void updateAvailable(const QString &newVersion, const QString &downloadUrl, const QString &releaseNotes);
+    void updateAvailable(const UpdateInfo &info);
     void noUpdateAvailable();
     void checkFailed(const QString &error);
 
@@ -45,8 +53,9 @@ private:
     QString m_currentVersion;
     QString m_latestVersion;
     QString m_downloadUrl;
+    UpdateInfo m_latestInfo;
     bool m_silentCheck;
-    
+
     bool isNewerVersion(const QString &latest, const QString &current);
 };
 

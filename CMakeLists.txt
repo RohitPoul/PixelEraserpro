@@ -9,7 +9,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     endif()
 endif()
 
-project(PixelEraserPro VERSION 1.0.1 LANGUAGES CXX)
+project(PixelEraserPro VERSION 2.0.0 LANGUAGES CXX)
 
 # Generate version header from template
 configure_file(
@@ -43,10 +43,15 @@ set(SOURCES
     src/ToolManager.cpp
     src/HistoryManager.cpp
     src/ExportDialog.cpp
+    src/SettingsDialog.cpp
     src/ResizeDialog.cpp
     src/Upscaler.cpp
     src/UpscaleDialog.cpp
+    src/BackgroundRemover.cpp
+    src/RemoverDialog.cpp
+    src/GlassWidgets.cpp
     src/UpdateChecker.cpp
+    src/UpdateDialog.cpp
 )
 
 # Header files
@@ -57,10 +62,16 @@ set(HEADERS
     include/ToolManager.h
     include/HistoryManager.h
     include/ExportDialog.h
+    include/SettingsDialog.h
     include/ResizeDialog.h
     include/Upscaler.h
     include/UpscaleDialog.h
+    include/BackgroundRemover.h
+    include/RemoverDialog.h
+    include/GlassWidgets.h
     include/UpdateChecker.h
+    include/UpdateDialog.h
+    include/OnnxRuntimeHelper.h
 )
 
 # Resources
@@ -102,7 +113,23 @@ target_link_libraries(${PROJECT_NAME}
 
 # Windows specific
 if(WIN32)
+    target_link_libraries(${PROJECT_NAME} dwmapi)
     set_target_properties(${PROJECT_NAME} PROPERTIES
         WIN32_EXECUTABLE ON
     )
+
+    # Copy ONNX Runtime core + CUDA EP DLLs beside the executable (beats C:\Windows\System32)
+    get_target_property(_ort_release_dll onnxruntime::onnxruntime IMPORTED_LOCATION_RELEASE)
+    if(_ort_release_dll)
+        get_filename_component(_ort_bin_dir "${_ort_release_dll}" DIRECTORY)
+        foreach(_ort_dll_name onnxruntime.dll onnxruntime_providers_shared.dll onnxruntime_providers_cuda.dll onnxruntime_providers_tensorrt.dll)
+            if(EXISTS "${_ort_bin_dir}/${_ort_dll_name}")
+                add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${_ort_bin_dir}/${_ort_dll_name}"
+                        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/${_ort_dll_name}"
+                )
+            endif()
+        endforeach()
+    endif()
 endif()

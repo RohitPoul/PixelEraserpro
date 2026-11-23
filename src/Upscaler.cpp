@@ -8,7 +8,7 @@
 #include <QMutexLocker>
 #include <QDebug>
 #include <thread>
-#include <onnxruntime_cxx_api.h>
+#include "OnnxRuntimeHelper.h"
 
 /*
  * Real-ESRGAN ONNX Upscaler
@@ -41,16 +41,26 @@ void Upscaler::setPaused(bool paused) {
 }
 
 void Upscaler::requestCancel() {
-    QMutexLocker locker(&m_pauseMutex);
-    m_cancelled.store(true);
-    m_paused.store(false);
-    m_pauseCond.wakeAll();
+    {
+        QMutexLocker locker(&m_pauseMutex);
+        m_cancelled.store(true);
+        m_paused.store(false);
+        m_pauseCond.wakeAll();
+    }
+    std::lock_guard<std::mutex> lock(m_terminateMutex);
+    if (m_activeTerminateFn && m_activeTerminateCtx) {
+        m_activeTerminateFn(m_activeTerminateCtx);
+    }
 }
 
 void Upscaler::resetControlFlags() {
     QMutexLocker locker(&m_pauseMutex);
     m_cancelled.store(false);
     m_paused.store(false);
+}
+
+QString Upscaler::activeBackend() const {
+    return (m_session && !m_session->backendLabel.isEmpty()) ? m_session->backendLabel : QStringLiteral("CPU");
 }
 
 bool Upscaler::waitIfPaused() {
@@ -185,97 +195,27 @@ bool Upscaler::downloadModel(Model model, std::function<void(qint64, qint64)> pr
     return true;
 }
 
-// ONNX Runtime session structure
-struct Upscaler::OnnxSession {
-    std::shared_ptr<Ort::Env> env;
-    Ort::SessionOptions sessionOptions;
-    std::unique_ptr<Ort::Session> session;
-    std::vector<std::string> inputNameStrings;
-    std::vector<std::string> outputNameStrings;
-    std::vector<const char*> inputNames;
-    std::vector<const char*> outputNames;
-    
-    OnnxSession() {
-        // Use ERROR level to suppress all those schema warnings
-        env = std::make_shared<Ort::Env>(ORT_LOGGING_LEVEL_ERROR, "RealESRGAN");
-        int numThreads = static_cast<int>(std::max(4u, std::thread::hardware_concurrency()));
-        sessionOptions.SetIntraOpNumThreads(numThreads);
-        sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-        // Prevent ONNX Runtime from hoarding multi-GB arena allocations across tiles
-        sessionOptions.DisableCpuMemArena();
-        sessionOptions.DisableMemPattern();
-    }
-};
-
-bool Upscaler::loadModel(Model model) {
+bool Upscaler::loadModel(Model model, bool allowGpu) {
     QString modelPath = getModelPath(model);
-    
+
     if (!QFile::exists(modelPath)) {
         emit error("Model file not found: " + modelPath);
         return false;
     }
-    
-    qDebug() << "Loading ONNX model from:" << modelPath;
-    
-    try {
-        m_session = std::make_unique<OnnxSession>();
-        
-        // Load the model
-        std::wstring wModelPath = modelPath.toStdWString();
-        m_session->session = std::make_unique<Ort::Session>(
-            *m_session->env, 
-            wModelPath.c_str(), 
-            m_session->sessionOptions
-        );
-        
-        // Get input/output info
-        Ort::AllocatorWithDefaultOptions allocator;
-        
-        // Input info
-        size_t numInputNodes = m_session->session->GetInputCount();
-        qDebug() << "Model has" << numInputNodes << "input(s)";
-        
-        if (numInputNodes > 0) {
-            auto inputName = m_session->session->GetInputNameAllocated(0, allocator);
-            m_session->inputNameStrings.push_back(std::string(inputName.get()));
-            m_session->inputNames.push_back(m_session->inputNameStrings.back().c_str());
-            qDebug() << "Input name:" << m_session->inputNameStrings[0].c_str();
-            
-            // Get input shape info
-            auto inputTypeInfo = m_session->session->GetInputTypeInfo(0);
-            auto tensorInfo = inputTypeInfo.GetTensorTypeAndShapeInfo();
-            auto inputShape = tensorInfo.GetShape();
-            qDebug() << "Expected input shape:";
-            for (size_t i = 0; i < inputShape.size(); i++) {
-                qDebug() << "  Dim" << i << ":" << inputShape[i] << (inputShape[i] == -1 ? "(dynamic)" : "");
-            }
-            qDebug() << "Input element type:" << tensorInfo.GetElementType();
-        }
-        
-        // Output info
-        size_t numOutputNodes = m_session->session->GetOutputCount();
-        qDebug() << "Model has" << numOutputNodes << "output(s)";
-        
-        if (numOutputNodes > 0) {
-            auto outputName = m_session->session->GetOutputNameAllocated(0, allocator);
-            m_session->outputNameStrings.push_back(std::string(outputName.get()));
-            m_session->outputNames.push_back(m_session->outputNameStrings.back().c_str());
-            qDebug() << "Output name:" << m_session->outputNameStrings[0].c_str();
-            
-            // Get output shape info
-            auto outputTypeInfo = m_session->session->GetOutputTypeInfo(0);
-            auto tensorInfo = outputTypeInfo.GetTensorTypeAndShapeInfo();
-            auto outputShape = tensorInfo.GetShape();
-            qDebug() << "Expected output shape:";
-            for (size_t i = 0; i < outputShape.size(); i++) {
-                qDebug() << "  Dim" << i << ":" << outputShape[i] << (outputShape[i] == -1 ? "(dynamic)" : "");
-            }
-        }
-        
-        m_currentModel = model;
-        qDebug() << "Model loaded successfully!";
+
+    if (m_session && m_session->session && m_currentModel == model && (allowGpu || !m_session->usingGpu)) {
+        emit backendChanged(m_session->backendLabel);
         return true;
-        
+    }
+
+    qDebug() << "Loading ONNX model from:" << modelPath;
+
+    try {
+        m_session = OnnxRuntimeHelper::createSession("RealESRGAN", modelPath.toStdWString(), allowGpu);
+        m_currentModel = model;
+        emit backendChanged(m_session->backendLabel);
+        qDebug() << "Model loaded successfully on" << m_session->backendLabel;
+        return true;
     } catch (const Ort::Exception& e) {
         QString msg = QString("ONNX Runtime error: %1").arg(e.what());
         qDebug() << msg;
@@ -317,15 +257,18 @@ cv::Mat Upscaler::upscale(const cv::Mat& input, Model model, int scale) {
     // Load model if not already loaded or different model
     if (!m_session || m_currentModel != model) {
         qDebug() << "Loading model...";
-        if (!loadModel(model)) {
+        if (!loadModel(model, true)) {
             qDebug() << "Failed to load model, using fallback resize";
             cv::Mat output;
             cv::resize(input, output, cv::Size(), scale, scale, cv::INTER_CUBIC);
             return output;
         }
+    } else {
+        emit backendChanged(m_session->backendLabel);
     }
-    
+
     emit progressChanged(0);
+    emit progressStageChanged(0, 5, QString("Preparing %1× tiles · %2").arg(scale).arg(activeBackend()));
     
     try {
         // Handle alpha channel separately
@@ -380,10 +323,13 @@ cv::Mat Upscaler::upscale(const cv::Mat& input, Model model, int scale) {
                 }
 
                 currentTile++;
-                int progress = (currentTile * 100) / totalTiles;
-                emit progressChanged(progress);
-                emit statusChanged(QString("Upscaling tile %1 / %2 (%3× Real-ESRGAN)...")
-                    .arg(currentTile).arg(totalTiles).arg(scale));
+                int basePct = ((currentTile - 1) * 100) / totalTiles;
+                int nextPct = (currentTile * 100) / totalTiles;
+                QString tileMsg = QString("Upscaling tile %1 / %2 (%3×) · %4")
+                    .arg(currentTile).arg(totalTiles).arg(scale).arg(activeBackend());
+                emit progressChanged(basePct);
+                emit statusChanged(tileMsg);
+                emit progressStageChanged(basePct, nextPct, tileMsg);
 
                 int tileY = std::max(0, ty - tilePadding);
                 int tileX = std::max(0, tx - tilePadding);
@@ -413,22 +359,51 @@ cv::Mat Upscaler::upscale(const cv::Mat& input, Model model, int scale) {
                 };
                 cv::split(tile, chwPlanes);
 
-                Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
-                    memoryInfo,
-                    inputTensorValues.data(),
-                    inputTensorValues.size(),
-                    inputShape.data(),
-                    inputShape.size()
-                );
+                auto runTileOnce = [&]() -> std::vector<Ort::Value> {
+                    Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
+                        memoryInfo,
+                        inputTensorValues.data(),
+                        inputTensorValues.size(),
+                        inputShape.data(),
+                        inputShape.size()
+                    );
+                    OnnxRuntimeHelper::ScopedRunOptions ro(
+                        m_terminateMutex, m_activeTerminateFn, m_activeTerminateCtx, m_cancelled, m_session->usingGpu
+                    );
+                    return m_session->session->Run(
+                        ro.get(),
+                        m_session->inputNames.data(),
+                        &inputTensor,
+                        1,
+                        m_session->outputNames.data(),
+                        1
+                    );
+                };
 
-                auto outputTensors = m_session->session->Run(
-                    Ort::RunOptions{nullptr},
-                    m_session->inputNames.data(),
-                    &inputTensor,
-                    1,
-                    m_session->outputNames.data(),
-                    1
-                );
+                std::vector<Ort::Value> outputTensors;
+                try {
+                    outputTensors = runTileOnce();
+                } catch (const Ort::Exception& e) {
+                    if (m_cancelled.load()) {
+                        unloadModel();
+                        return cv::Mat();
+                    }
+                    if (m_session && m_session->usingGpu) {
+                        qWarning() << "Upscaler CUDA pass fallback to CPU:" << e.what();
+                        m_session.reset();
+                        if (loadModel(model, false)) {
+                            outputTensors = runTileOnce();
+                        } else {
+                            throw;
+                        }
+                    } else {
+                        throw;
+                    }
+                }
+                if (m_cancelled.load() || outputTensors.empty()) {
+                    unloadModel();
+                    return cv::Mat();
+                }
 
                 float* outputData = outputTensors[0].GetTensorMutableData<float>();
                 auto outputShape = outputTensors[0].GetTensorTypeAndShapeInfo().GetShape();
@@ -490,6 +465,7 @@ cv::Mat Upscaler::upscale(const cv::Mat& input, Model model, int scale) {
         }
         
         emit progressChanged(100);
+        emit progressStageChanged(100, 100, "Complete");
         qDebug() << "=== ONNX INFERENCE COMPLETE ===";
         
         // Convert back to 8-bit
@@ -515,6 +491,10 @@ cv::Mat Upscaler::upscale(const cv::Mat& input, Model model, int scale) {
         return result8bit;
         
     } catch (const Ort::Exception& e) {
+        if (m_cancelled.load()) {
+            unloadModel();
+            return cv::Mat();
+        }
         QString msg = QString("ONNX Runtime error: %1").arg(e.what());
         qDebug() << msg;
         emit error(msg);
@@ -523,6 +503,10 @@ cv::Mat Upscaler::upscale(const cv::Mat& input, Model model, int scale) {
         qDebug() << "Using fallback resize after ONNX error";
         return output;
     } catch (const std::exception& e) {
+        if (m_cancelled.load()) {
+            unloadModel();
+            return cv::Mat();
+        }
         QString msg = QString("Upscaling error: %1").arg(e.what());
         qDebug() << msg;
         emit error(msg);

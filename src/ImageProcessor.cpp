@@ -1,5 +1,6 @@
 #include "ImageProcessor.h"
 #include <QFile>
+#include <QFileInfo>
 #include <cmath>
 #include <cstring>
 #include <algorithm>
@@ -9,51 +10,90 @@
 ImageProcessor::ImageProcessor() = default;
 ImageProcessor::~ImageProcessor() = default;
 
-bool ImageProcessor::loadImage(const QString& path) {
-    // Unicode-safe read via QFile + cv::imdecode (supports non-ASCII / Japanese / emoji filenames on Windows)
+ImageProcessor::LoadedImageData ImageProcessor::decodeImageFile(const QString& path, bool buildDisplayCaches) {
+    LoadedImageData res;
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly)) {
-        return false;
+        return res;
     }
     QByteArray raw = f.readAll();
     if (raw.isEmpty()) {
-        return false;
-    }
-    std::vector<uchar> buf(raw.begin(), raw.end());
-    m_originalImage = cv::imdecode(buf, cv::IMREAD_UNCHANGED);
-
-    if (m_originalImage.empty()) {
-        return false;
+        return res;
     }
 
-    ensureAlphaChannel(m_originalImage);
-    m_currentImage = m_originalImage.clone();
+    // Zero-copy wrapper around QByteArray for cv::imdecode (avoids extra multi-MB vector copy)
+    cv::Mat rawBuf(1, static_cast<int>(raw.size()), CV_8UC1, raw.data());
+    res.originalImage = cv::imdecode(rawBuf, cv::IMREAD_UNCHANGED);
+    if (res.originalImage.empty()) {
+        return res;
+    }
 
-    // Self-Remembering PNG check:
-    // If a loaded 4-channel PNG already has transparent pixels (alpha < 255) that preserve
-    // non-zero original RGB values underneath, restore m_originalImage's alpha to 255 so
-    // Repair Brush [R], Compare Original [H], Restore Original, and G4 AI Remover can
-    // bring back the removed background even after saving & reopening the PNG!
-    m_hasEmbeddedOriginal = false;
+    ensureAlphaChannel(res.originalImage);
+    res.currentImage = res.originalImage.clone();
+
+    const int H = res.originalImage.rows;
+    const int W = res.originalImage.cols;
+    res.initialAlpha.create(H, W, CV_8UC1);
+
+    // Single pass: extract initial alpha for undo + detect & restore Self-Remembering PNG RGB
     int transparentWithRgbCount = 0;
     int transparentCount = 0;
-    for (int y = 0; y < m_originalImage.rows; ++y) {
-        cv::Vec4b* origRow = m_originalImage.ptr<cv::Vec4b>(y);
-        for (int x = 0; x < m_originalImage.cols; ++x) {
-            cv::Vec4b& px = origRow[x];
-            if (px[3] < 255) {
+    uchar* const origBase = res.originalImage.data;
+    const size_t origStep = res.originalImage.step;
+    uchar* const alphaBase = res.initialAlpha.data;
+    const size_t alphaStep = res.initialAlpha.step;
+
+    for (int y = 0; y < H; ++y) {
+        uint32_t* row32 = reinterpret_cast<uint32_t*>(origBase + static_cast<size_t>(y) * origStep);
+        uchar* aRow = alphaBase + static_cast<size_t>(y) * alphaStep;
+        for (int x = 0; x < W; ++x) {
+            const uint32_t px = row32[x];
+            const uint32_t a = px >> 24;
+            aRow[x] = static_cast<uchar>(a);
+            if (a < 255u) {
                 transparentCount++;
-                if (px[0] > 0 || px[1] > 0 || px[2] > 0) {
+                if ((px & 0x00FFFFFFu) != 0u) {
                     transparentWithRgbCount++;
                 }
-                px[3] = 255; // Make m_originalImage fully opaque so Repair/Compare reveals the hidden RGB!
+                row32[x] = px | 0xFF000000u; // Reveal hidden background RGB for Repair [R] / Compare [H] / Restore
             }
         }
     }
-    m_hasEmbeddedOriginal = (transparentCount > 0 && transparentWithRgbCount > 0);
+    res.hasEmbeddedOriginal = (transparentCount > 0 && transparentWithRgbCount > 0);
 
-    // Lazy LAB conversion: defer BGR->Lab until Auto Color Remove is actually used (~40% faster image load!)
+    if (buildDisplayCaches) {
+        res.displayPremul = QImage(W, H, QImage::Format_ARGB32_Premultiplied);
+        fillPremulDisplayRegion(res.currentImage, res.displayPremul, QRect(0, 0, W, H));
+        if (static_cast<qint64>(W) * H > 2000000) {
+            const int mw = std::max(1, W / 4);
+            const int mh = std::max(1, H / 4);
+            cv::Mat srcView(H, W, CV_8UC4, const_cast<uchar*>(res.displayPremul.constBits()),
+                            static_cast<size_t>(res.displayPremul.bytesPerLine()));
+            res.displayMip4 = QImage(mw, mh, QImage::Format_ARGB32_Premultiplied);
+            cv::Mat dstView(mh, mw, CV_8UC4, res.displayMip4.bits(),
+                            static_cast<size_t>(res.displayMip4.bytesPerLine()));
+            cv::resize(srcView, dstView, cv::Size(mw, mh), 0, 0, cv::INTER_AREA);
+        }
+    }
+
+    res.ok = true;
+    return res;
+}
+
+void ImageProcessor::applyLoadedData(LoadedImageData&& data) {
+    m_originalImage = std::move(data.originalImage);
+    m_currentImage = std::move(data.currentImage);
+    m_hasEmbeddedOriginal = data.hasEmbeddedOriginal;
+    // Lazy LAB conversion: defer BGR->Lab until Auto Color Remove is actually used
     m_labImage.release();
+}
+
+bool ImageProcessor::loadImage(const QString& path) {
+    LoadedImageData data = decodeImageFile(path, false);
+    if (!data.ok) {
+        return false;
+    }
+    applyLoadedData(std::move(data));
     return true;
 }
 
@@ -101,19 +141,19 @@ bool ImageProcessor::saveImage(const QString& path) {
     return exportImage(path, 0);
 }
 
-bool ImageProcessor::exportImage(const QString& path, int edgeSoftenLevel) {
-    if (m_currentImage.empty()) return false;
+bool ImageProcessor::exportImageData(const cv::Mat& currentImg, const cv::Mat& originalImg,
+                                     const QString& path, int edgeSoftenLevel) {
+    if (currentImg.empty()) return false;
 
     cv::Mat softened = (edgeSoftenLevel > 0)
-        ? applySoftening(m_currentImage, edgeSoftenLevel)
-        : m_currentImage;
+        ? applySoftening(currentImg, edgeSoftenLevel)
+        : currentImg;
 
     // Self-Remembering PNG: embed the full original (B, G, R) channels under every pixel
-    // while keeping the exact cutout Alpha channel (A = 0 looks 100% transparent everywhere,
-    // yet reopening the PNG in PixelEraser Pro remembers the entire un-removed original image!)
+    // while keeping the exact cutout Alpha channel
     cv::Mat exportImage;
-    if (!m_originalImage.empty() && m_originalImage.size() == softened.size() && m_originalImage.channels() == 4) {
-        exportImage = m_originalImage.clone();
+    if (!originalImg.empty() && originalImg.size() == softened.size() && originalImg.channels() == 4) {
+        exportImage = originalImg.clone();
         cv::Mat alphaChan;
         cv::extractChannel(softened, alphaChan, 3);
         cv::insertChannel(alphaChan, exportImage, 3);
@@ -121,12 +161,47 @@ bool ImageProcessor::exportImage(const QString& path, int edgeSoftenLevel) {
         exportImage = softened;
     }
 
-    std::vector<int> params = {cv::IMWRITE_PNG_COMPRESSION, 6};
+    const QString ext = QFileInfo(path).suffix().toLower();
     std::vector<uchar> encoded;
-    if (!cv::imencode(".png", exportImage, encoded, params)) return false;
+
+    if (ext == "jpg" || ext == "jpeg" || ext == "bmp") {
+        // Formats without alpha: cleanly composite onto solid white so transparent areas never leak original pixels
+        cv::Mat bgr(softened.rows, softened.cols, CV_8UC3);
+        for (int y = 0; y < softened.rows; ++y) {
+            const cv::Vec4b* srcRow = softened.ptr<cv::Vec4b>(y);
+            cv::Vec3b* dstRow = bgr.ptr<cv::Vec3b>(y);
+            for (int x = 0; x < softened.cols; ++x) {
+                const uint32_t a = srcRow[x][3];
+                const uint32_t invA = 255u - a;
+                dstRow[x][0] = static_cast<uchar>((srcRow[x][0] * a + 255u * invA + 127u) / 255u);
+                dstRow[x][1] = static_cast<uchar>((srcRow[x][1] * a + 255u * invA + 127u) / 255u);
+                dstRow[x][2] = static_cast<uchar>((srcRow[x][2] * a + 255u * invA + 127u) / 255u);
+            }
+        }
+        if (ext == "bmp") {
+            if (!cv::imencode(".bmp", bgr, encoded)) return false;
+        } else {
+            std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 95};
+            if (!cv::imencode(".jpg", bgr, encoded, params)) return false;
+        }
+    } else if (ext == "webp") {
+        std::vector<int> params = {cv::IMWRITE_WEBP_QUALITY, 101};
+        if (!cv::imencode(".webp", exportImage, encoded, params)) return false;
+    } else if (ext == "tiff" || ext == "tif") {
+        if (!cv::imencode(".tiff", exportImage, encoded)) return false;
+    } else {
+        // Fast zlib compression level 2: 3-5x faster export on large 4K/8K Self-Remembering PNGs while preserving exact lossless RGBA
+        std::vector<int> params = {cv::IMWRITE_PNG_COMPRESSION, 2};
+        if (!cv::imencode(".png", exportImage, encoded, params)) return false;
+    }
+
     QFile f(path);
     if (!f.open(QIODevice::WriteOnly)) return false;
     return f.write(reinterpret_cast<const char*>(encoded.data()), static_cast<qint64>(encoded.size())) == static_cast<qint64>(encoded.size());
+}
+
+bool ImageProcessor::exportImage(const QString& path, int edgeSoftenLevel) {
+    return exportImageData(m_currentImage, m_originalImage, path, edgeSoftenLevel);
 }
 
 void ImageProcessor::restoreFullOriginal() {
@@ -265,23 +340,24 @@ QImage ImageProcessor::getDisplayImage() const {
                   static_cast<int>(m_currentImage.step), QImage::Format_ARGB32).copy();
 }
 
-void ImageProcessor::updateDisplayRegion(QImage& target, const QRect& region) const {
-    if (m_currentImage.empty() || target.isNull()) return;
-    
-    // Clamp region to image bounds
+void ImageProcessor::fillPremulDisplayRegion(const cv::Mat& srcBgra, QImage& target, const QRect& region) {
+    if (srcBgra.empty() || target.isNull()) return;
     int x1 = std::max(0, region.left());
     int y1 = std::max(0, region.top());
-    int x2 = std::min(m_currentImage.cols, region.right() + 1);
-    int y2 = std::min(m_currentImage.rows, region.bottom() + 1);
-    
+    int x2 = std::min(srcBgra.cols, region.right() + 1);
+    int y2 = std::min(srcBgra.rows, region.bottom() + 1);
     if (x1 >= x2 || y1 >= y2) return;
-    
-    // Fast path: Format_ARGB32_Premultiplied feeds Qt's SIMD AVX2/SSE2 blitter directly (3-5x faster panning/brushing!)
+
+    const uchar* const srcBase = srcBgra.data;
+    const size_t srcStep = srcBgra.step;
+    uchar* const dstBase = target.bits();
+    const int dstStride = target.bytesPerLine();
+
     if (target.format() == QImage::Format_ARGB32_Premultiplied) {
         const int count = x2 - x1;
         for (int y = y1; y < y2; ++y) {
-            const uint32_t* src32 = reinterpret_cast<const uint32_t*>(m_currentImage.ptr<cv::Vec4b>(y)) + x1;
-            uint32_t* dst32 = reinterpret_cast<uint32_t*>(target.scanLine(y)) + x1;
+            const uint32_t* src32 = reinterpret_cast<const uint32_t*>(srcBase + static_cast<size_t>(y) * srcStep) + x1;
+            uint32_t* dst32 = reinterpret_cast<uint32_t*>(dstBase + static_cast<size_t>(y) * dstStride) + x1;
             for (int i = 0; i < count; ++i) {
                 const uint32_t p = src32[i];
                 const uint32_t a = p >> 24;
@@ -290,7 +366,6 @@ void ImageProcessor::updateDisplayRegion(QImage& target, const QRect& region) co
                 } else if (a == 0u) {
                     dst32[i] = 0u;
                 } else {
-                    // Exact SWAR premultiply: (c * a + 127) / 255 without division
                     uint32_t rb = (p & 0x00FF00FFu) * a + 0x00800080u;
                     rb = ((rb + ((rb >> 8) & 0x00FF00FFu)) >> 8) & 0x00FF00FFu;
                     uint32_t g = ((p & 0x0000FF00u) >> 8) * a + 0x80u;
@@ -302,38 +377,31 @@ void ImageProcessor::updateDisplayRegion(QImage& target, const QRect& region) co
         return;
     }
 
-    // Fast path: CV_8UC4 (BGRA) has identical byte layout in memory to QImage::Format_ARGB32 on little-endian
     if (target.format() == QImage::Format_ARGB32) {
         const size_t rowBytes = static_cast<size_t>(x2 - x1) * 4;
-        if (x1 == 0 && x2 == m_currentImage.cols &&
-            m_currentImage.step == static_cast<size_t>(target.bytesPerLine())) {
-            const uchar* srcStart = m_currentImage.ptr<uchar>(y1);
-            uchar* dstStart = target.scanLine(y1);
-            std::memcpy(dstStart, srcStart, static_cast<size_t>(y2 - y1) * m_currentImage.step);
-        } else {
-            for (int y = y1; y < y2; ++y) {
-                const cv::Vec4b* srcRow = m_currentImage.ptr<cv::Vec4b>(y);
-                uchar* dstRow = target.scanLine(y);
-                std::memcpy(dstRow + x1 * 4, srcRow + x1, rowBytes);
-            }
+        for (int y = y1; y < y2; ++y) {
+            std::memcpy(dstBase + static_cast<size_t>(y) * dstStride + x1 * 4,
+                        srcBase + static_cast<size_t>(y) * srcStep + x1 * 4, rowBytes);
         }
         return;
     }
 
-    // Fallback for RGBA8888
     for (int y = y1; y < y2; ++y) {
-        const cv::Vec4b* srcRow = m_currentImage.ptr<cv::Vec4b>(y);
-        uchar* dstRow = target.scanLine(y);
-        
+        const cv::Vec4b* srcRow = reinterpret_cast<const cv::Vec4b*>(srcBase + static_cast<size_t>(y) * srcStep);
+        uchar* dstRow = dstBase + static_cast<size_t>(y) * dstStride;
         for (int x = x1; x < x2; ++x) {
             const cv::Vec4b& src = srcRow[x];
             int dstIdx = x * 4;
-            dstRow[dstIdx + 0] = src[2]; // R
-            dstRow[dstIdx + 1] = src[1]; // G
-            dstRow[dstIdx + 2] = src[0]; // B
-            dstRow[dstIdx + 3] = src[3]; // A
+            dstRow[dstIdx + 0] = src[2];
+            dstRow[dstIdx + 1] = src[1];
+            dstRow[dstIdx + 2] = src[0];
+            dstRow[dstIdx + 3] = src[3];
         }
     }
+}
+
+void ImageProcessor::updateDisplayRegion(QImage& target, const QRect& region) const {
+    fillPremulDisplayRegion(m_currentImage, target, region);
 }
 
 QImage ImageProcessor::getOriginalAsQImage() const {
@@ -364,7 +432,8 @@ QImage ImageProcessor::matToQImage(const cv::Mat& mat) const {
 }
 
 // Smart color matching using LAB color space - perceptually accurate & viewport-scoped memory
-void ImageProcessor::autoColorRemove(int x, int y, int tolerance, const QRect& viewportBounds) {
+void ImageProcessor::autoColorRemove(int x, int y, int tolerance, const QRect& viewportBounds, QRect* outDirtyRect) {
+    if (outDirtyRect) *outDirtyRect = QRect();
     if (m_currentImage.empty()) return;
     if (x < 0 || x >= m_currentImage.cols || y < 0 || y >= m_currentImage.rows) return;
 
@@ -403,13 +472,24 @@ void ImageProcessor::autoColorRemove(int x, int y, int tolerance, const QRect& v
     const float seedA = static_cast<float>(seedLab[1]);
     const float seedB = static_cast<float>(seedLab[2]);
 
-    while (queuePos < queue.size()) {
-        cv::Point pt = queue[queuePos++];
+    int modMinX = maxX + 1, modMinY = maxY + 1, modMaxX = minX - 1, modMaxY = minY - 1;
 
-        cv::Vec4b& pixel = m_currentImage.ptr<cv::Vec4b>(pt.y)[pt.x];
+    uchar* const curBase = m_currentImage.data;
+    const size_t curStep = m_currentImage.step;
+    const uchar* const labBase = m_labImage.data;
+    const size_t labStep = m_labImage.step;
+    uchar* const visBase = visited.data;
+    const size_t visStep = visited.step;
+
+    while (queuePos < queue.size()) {
+        const cv::Point pt = queue[queuePos++];
+
+        cv::Vec4b* curRow = reinterpret_cast<cv::Vec4b*>(curBase + static_cast<size_t>(pt.y) * curStep);
+        cv::Vec4b& pixel = curRow[pt.x];
         if (pixel[3] == 0) continue;
 
-        const cv::Vec3b& pixelLab = m_labImage.ptr<cv::Vec3b>(pt.y)[pt.x];
+        const cv::Vec3b* labRow = reinterpret_cast<const cv::Vec3b*>(labBase + static_cast<size_t>(pt.y) * labStep);
+        const cv::Vec3b& pixelLab = labRow[pt.x];
 
         const float dL = static_cast<float>(pixelLab[0]) - seedL;
         const float da = static_cast<float>(pixelLab[1]) - seedA;
@@ -419,32 +499,40 @@ void ImageProcessor::autoColorRemove(int x, int y, int tolerance, const QRect& v
         if (deltaESq > maxDeltaESq) continue;
 
         pixel[3] = 0;
+        if (pt.x < modMinX) modMinX = pt.x;
+        if (pt.x > modMaxX) modMaxX = pt.x;
+        if (pt.y < modMinY) modMinY = pt.y;
+        if (pt.y > modMaxY) modMaxY = pt.y;
 
         const int ly = pt.y - minY;
         const int lx = pt.x - minX;
-        uchar* visRow = visited.ptr<uchar>(ly);
+        uchar* visRow = visBase + static_cast<size_t>(ly) * visStep;
         if (pt.x > minX && !visRow[lx - 1]) {
             visRow[lx - 1] = 1;
-            queue.push_back(cv::Point(pt.x - 1, pt.y));
+            queue.emplace_back(pt.x - 1, pt.y);
         }
         if (pt.x < maxX && !visRow[lx + 1]) {
             visRow[lx + 1] = 1;
-            queue.push_back(cv::Point(pt.x + 1, pt.y));
+            queue.emplace_back(pt.x + 1, pt.y);
         }
         if (pt.y > minY) {
-            uchar* topVisRow = visited.ptr<uchar>(ly - 1);
+            uchar* topVisRow = visRow - visStep;
             if (!topVisRow[lx]) {
                 topVisRow[lx] = 1;
-                queue.push_back(cv::Point(pt.x, pt.y - 1));
+                queue.emplace_back(pt.x, pt.y - 1);
             }
         }
         if (pt.y < maxY) {
-            uchar* botVisRow = visited.ptr<uchar>(ly + 1);
+            uchar* botVisRow = visRow + visStep;
             if (!botVisRow[lx]) {
                 botVisRow[lx] = 1;
-                queue.push_back(cv::Point(pt.x, pt.y + 1));
+                queue.emplace_back(pt.x, pt.y + 1);
             }
         }
+    }
+
+    if (outDirtyRect && modMaxX >= modMinX && modMaxY >= modMinY) {
+        *outDirtyRect = QRect(modMinX, modMinY, modMaxX - modMinX + 1, modMaxY - modMinY + 1);
     }
 }
 
@@ -464,35 +552,35 @@ bool ImageProcessor::colorMatches(const cv::Vec4b& c1, const cv::Vec4b& c2, int 
 void ImageProcessor::eraseWithBrush(int centerX, int centerY, int diameter, float hardness) {
     if (m_currentImage.empty()) return;
 
-    int radius = diameter / 2;
-    if (radius < 1) radius = 1;
-    
+    const float radiusF = std::max(0.5f, diameter * 0.5f);
+    const int boundR = static_cast<int>(std::ceil(radiusF));
+
     // Clamp bounds once
-    int minX = std::max(0, centerX - radius);
-    int maxX = std::min(m_currentImage.cols - 1, centerX + radius);
-    int minY = std::max(0, centerY - radius);
-    int maxY = std::min(m_currentImage.rows - 1, centerY + radius);
-    
+    int minX = std::max(0, centerX - boundR);
+    int maxX = std::min(m_currentImage.cols - 1, centerX + boundR);
+    int minY = std::max(0, centerY - boundR);
+    int maxY = std::min(m_currentImage.rows - 1, centerY + boundR);
+
     if (minX > maxX || minY > maxY) return;
 
-    float radiusSq = static_cast<float>(radius * radius);
-    float hardRadius = radius * hardness;
-    float hardRadiusSq = hardRadius * hardRadius;
-    float featherRange = radiusSq - hardRadiusSq;
-    float invFeather = (featherRange > 0) ? 1.0f / featherRange : 0;
+    const float radiusSq = radiusF * radiusF;
+    const float hardRadius = radiusF * hardness;
+    const float hardRadiusSq = hardRadius * hardRadius;
+    const float featherRange = radiusSq - hardRadiusSq;
+    const float invFeather = (featherRange > 1e-6f) ? 1.0f / featherRange : 0.0f;
 
     for (int y = minY; y <= maxY; ++y) {
         cv::Vec4b* row = m_currentImage.ptr<cv::Vec4b>(y);
         float dy = static_cast<float>(y - centerY);
         float dySq = dy * dy;
-        
+
         for (int x = minX; x <= maxX; ++x) {
             float dx = static_cast<float>(x - centerX);
             float distSq = dx * dx + dySq;
 
             if (distSq <= radiusSq) {
                 float alpha = 1.0f;
-                if (distSq > hardRadiusSq) {
+                if (distSq > hardRadiusSq && invFeather > 0.0f) {
                     alpha = (radiusSq - distSq) * invFeather;
                 }
                 row[x][3] = static_cast<uchar>(row[x][3] * (1.0f - alpha));
@@ -507,25 +595,26 @@ void ImageProcessor::eraseAlongPath(const QPoint& start, const QPoint& end, int 
     int dx = end.x() - start.x();
     int dy = end.y() - start.y();
     int distSq = dx * dx + dy * dy;
-    
+
     if (distSq == 0) {
         eraseWithBrush(start.x(), start.y(), diameter, hardness);
         return;
     }
-    
-    int radius = std::max(1, diameter / 2);
-    int minX = std::max(0, std::min(start.x(), end.x()) - radius);
-    int maxX = std::min(m_currentImage.cols - 1, std::max(start.x(), end.x()) + radius);
-    int minY = std::max(0, std::min(start.y(), end.y()) - radius);
-    int maxY = std::min(m_currentImage.rows - 1, std::max(start.y(), end.y()) + radius);
+
+    const float radiusF = std::max(0.5f, diameter * 0.5f);
+    const int boundR = static_cast<int>(std::ceil(radiusF));
+    int minX = std::max(0, std::min(start.x(), end.x()) - boundR);
+    int maxX = std::min(m_currentImage.cols - 1, std::max(start.x(), end.x()) + boundR);
+    int minY = std::max(0, std::min(start.y(), end.y()) - boundR);
+    int maxY = std::min(m_currentImage.rows - 1, std::max(start.y(), end.y()) + boundR);
 
     if (minX > maxX || minY > maxY) return;
 
-    float radiusSq = static_cast<float>(radius * radius);
-    float hardRadius = radius * hardness;
-    float hardRadiusSq = hardRadius * hardRadius;
-    float featherRange = radiusSq - hardRadiusSq;
-    float invFeather = (featherRange > 0.0f) ? 1.0f / featherRange : 0.0f;
+    const float radiusSq = radiusF * radiusF;
+    const float hardRadius = radiusF * hardness;
+    const float hardRadiusSq = hardRadius * hardRadius;
+    const float featherRange = radiusSq - hardRadiusSq;
+    const float invFeather = (featherRange > 1e-6f) ? 1.0f / featherRange : 0.0f;
 
     float x0 = static_cast<float>(start.x());
     float y0 = static_cast<float>(start.y());
@@ -550,7 +639,7 @@ void ImageProcessor::eraseAlongPath(const QPoint& start, const QPoint& end, int 
 
             if (dSq <= radiusSq) {
                 float alpha = 1.0f;
-                if (dSq > hardRadiusSq) {
+                if (dSq > hardRadiusSq && invFeather > 0.0f) {
                     alpha = (radiusSq - dSq) * invFeather;
                 }
                 row[x][3] = static_cast<uchar>(row[x][3] * (1.0f - alpha));
@@ -562,21 +651,21 @@ void ImageProcessor::eraseAlongPath(const QPoint& start, const QPoint& end, int 
 void ImageProcessor::repairWithBrush(int centerX, int centerY, int diameter) {
     if (m_currentImage.empty() || m_originalImage.empty()) return;
 
-    int radius = diameter / 2;
-    if (radius < 1) radius = 1;
-    
-    int minX = std::max(0, centerX - radius);
-    int maxX = std::min(m_currentImage.cols - 1, centerX + radius);
-    int minY = std::max(0, centerY - radius);
-    int maxY = std::min(m_currentImage.rows - 1, centerY + radius);
-    
+    const float radiusF = std::max(0.5f, diameter * 0.5f);
+    const int boundR = static_cast<int>(std::ceil(radiusF));
+
+    int minX = std::max(0, centerX - boundR);
+    int maxX = std::min(m_currentImage.cols - 1, centerX + boundR);
+    int minY = std::max(0, centerY - boundR);
+    int maxY = std::min(m_currentImage.rows - 1, centerY + boundR);
+
     if (minX > maxX || minY > maxY) return;
 
-    float radiusSq = static_cast<float>(radius * radius);
-    float hardRadius = radius * 0.8f;
-    float hardRadiusSq = hardRadius * hardRadius;
-    float featherRange = radiusSq - hardRadiusSq;
-    float invFeather = (featherRange > 0) ? 1.0f / featherRange : 0;
+    const float radiusSq = radiusF * radiusF;
+    const float hardRadius = radiusF * 0.8f;
+    const float hardRadiusSq = hardRadius * hardRadius;
+    const float featherRange = radiusSq - hardRadiusSq;
+    const float invFeather = (featherRange > 1e-6f) ? 1.0f / featherRange : 0.0f;
 
     for (int y = minY; y <= maxY; ++y) {
         cv::Vec4b* currentRow = m_currentImage.ptr<cv::Vec4b>(y);
@@ -590,7 +679,7 @@ void ImageProcessor::repairWithBrush(int centerX, int centerY, int diameter) {
 
             if (distSq <= radiusSq) {
                 float blend = 1.0f;
-                if (distSq > hardRadiusSq) {
+                if (distSq > hardRadiusSq && invFeather > 0.0f) {
                     blend = (radiusSq - distSq) * invFeather;
                 }
 
@@ -611,25 +700,26 @@ void ImageProcessor::repairAlongPath(const QPoint& start, const QPoint& end, int
     int dx = end.x() - start.x();
     int dy = end.y() - start.y();
     int distSq = dx * dx + dy * dy;
-    
+
     if (distSq == 0) {
         repairWithBrush(start.x(), start.y(), diameter);
         return;
     }
-    
-    int radius = std::max(1, diameter / 2);
-    int minX = std::max(0, std::min(start.x(), end.x()) - radius);
-    int maxX = std::min(m_currentImage.cols - 1, std::max(start.x(), end.x()) + radius);
-    int minY = std::max(0, std::min(start.y(), end.y()) - radius);
-    int maxY = std::min(m_currentImage.rows - 1, std::max(start.y(), end.y()) + radius);
+
+    const float radiusF = std::max(0.5f, diameter * 0.5f);
+    const int boundR = static_cast<int>(std::ceil(radiusF));
+    int minX = std::max(0, std::min(start.x(), end.x()) - boundR);
+    int maxX = std::min(m_currentImage.cols - 1, std::max(start.x(), end.x()) + boundR);
+    int minY = std::max(0, std::min(start.y(), end.y()) - boundR);
+    int maxY = std::min(m_currentImage.rows - 1, std::max(start.y(), end.y()) + boundR);
 
     if (minX > maxX || minY > maxY) return;
 
-    float radiusSq = static_cast<float>(radius * radius);
-    float hardRadius = radius * 0.8f;
-    float hardRadiusSq = hardRadius * hardRadius;
-    float featherRange = radiusSq - hardRadiusSq;
-    float invFeather = (featherRange > 0.0f) ? 1.0f / featherRange : 0.0f;
+    const float radiusSq = radiusF * radiusF;
+    const float hardRadius = radiusF * 0.8f;
+    const float hardRadiusSq = hardRadius * hardRadius;
+    const float featherRange = radiusSq - hardRadiusSq;
+    const float invFeather = (featherRange > 1e-6f) ? 1.0f / featherRange : 0.0f;
 
     float x0 = static_cast<float>(start.x());
     float y0 = static_cast<float>(start.y());
@@ -655,7 +745,7 @@ void ImageProcessor::repairAlongPath(const QPoint& start, const QPoint& end, int
 
             if (dSq <= radiusSq) {
                 float blend = 1.0f;
-                if (dSq > hardRadiusSq) {
+                if (dSq > hardRadiusSq && invFeather > 0.0f) {
                     blend = (radiusSq - dSq) * invFeather;
                 }
 

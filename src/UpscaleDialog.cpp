@@ -1,123 +1,168 @@
 #include "UpscaleDialog.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
-#include <QGroupBox>
-#include <QMessageBox>
 #include <QApplication>
 
 UpscaleDialog::UpscaleDialog(QWidget* parent)
-    : QDialog(parent)
+    : GlassModalDialog("AI Upscale Studio", parent)
     , m_upscaler(new Upscaler(this))
 {
-    setWindowTitle("AI Upscale Image");
-    setMinimumSize(440, 340);
-    setModal(true);
+    setMinimumWidth(500);
     setupUI();
     updateModelStatus();
 }
 
 void UpscaleDialog::setupUI() {
-    QVBoxLayout* mainLayout = new QVBoxLayout(this);
-    mainLayout->setSpacing(18);
-    mainLayout->setContentsMargins(24, 24, 24, 24);
+    const GlassTheme& th = ThemeManager::instance().current();
+    QVBoxLayout* root = contentLayout();
 
-    // Model selection group
-    QGroupBox* modelGroup = new QGroupBox("Select AI Model");
-    QVBoxLayout* modelLayout = new QVBoxLayout(modelGroup);
-    modelLayout->setSpacing(12);
-    modelLayout->setContentsMargins(16, 20, 16, 16);
+    // Hero Header Liquid Glass Card
+    GlassPanel* heroCard = new GlassPanel();
+    heroCard->setCornerRadius(20.0);
+    heroCard->setAccentGlow(true);
+    QVBoxLayout* heroLay = new QVBoxLayout(heroCard);
+    heroLay->setContentsMargins(18, 16, 18, 16);
+    heroLay->setSpacing(6);
 
-    m_modelCombo = new QComboBox();
-    m_modelCombo->setMinimumHeight(32);
-    m_modelCombo->addItem(Upscaler::getModelName(Upscaler::RealESRGAN_x4), static_cast<int>(Upscaler::RealESRGAN_x4));
-    m_modelCombo->addItem(Upscaler::getModelName(Upscaler::RealESRGAN_x2), static_cast<int>(Upscaler::RealESRGAN_x2));
-    m_modelCombo->addItem(Upscaler::getModelName(Upscaler::RealESRGAN_x4_anime), static_cast<int>(Upscaler::RealESRGAN_x4_anime));
-    modelLayout->addWidget(m_modelCombo);
+    QHBoxLayout* hdrRow = new QHBoxLayout();
+    QLabel* titleLbl = new QLabel("AI Super-Resolution");
+    titleLbl->setStyleSheet("color: #ffffff; font-size: 17px; font-weight: 700; background: transparent;");
+
+    QLabel* badgeLbl = new QLabel("Real-ESRGAN · ONNX");
+    badgeLbl->setStyleSheet(QString(
+        "color: %1; font-size: 11px; font-weight: 700; "
+        "background-color: rgba(%2,%3,%4,%5); border: 1px solid rgba(%6,%7,%8,%9); "
+        "border-radius: 10px; padding: 3px 10px;"
+    ).arg(th.badgeText.name())
+     .arg(th.badgeBg.red()).arg(th.badgeBg.green()).arg(th.badgeBg.blue()).arg(th.badgeBg.alpha())
+     .arg(th.badgeBorder.red()).arg(th.badgeBorder.green()).arg(th.badgeBorder.blue()).arg(th.badgeBorder.alpha()));
+    hdrRow->addWidget(titleLbl);
+    hdrRow->addStretch();
+    hdrRow->addWidget(badgeLbl);
+    heroLay->addLayout(hdrRow);
+
+    QLabel* subLbl = new QLabel("Enhance fine lines, textures, and crisp transparent edges using neural upscaling.");
+    subLbl->setWordWrap(true);
+    subLbl->setStyleSheet("color: #b4c0d2; font-size: 12px; background: transparent;");
+    heroLay->addWidget(subLbl);
+    root->addWidget(heroCard);
+
+    // Model Selection Card with Smooth Sliding LiquidGlassTabBar
+    GlassPanel* modelCard = new GlassPanel();
+    modelCard->setCornerRadius(20.0);
+    QVBoxLayout* modelLay = new QVBoxLayout(modelCard);
+    modelLay->setContentsMargins(18, 16, 18, 16);
+    modelLay->setSpacing(12);
+
+    QLabel* pickLbl = new QLabel("Model Architecture");
+    pickLbl->setStyleSheet("color: #c8d2e2; font-size: 11px; font-weight: 700; background: transparent;");
+    modelLay->addWidget(pickLbl);
+
+    GlassPanel* tabWrap = new GlassPanel();
+    tabWrap->setCornerRadius(19.0);
+    tabWrap->setSubSurface(true);
+    tabWrap->setElevated(false);
+    tabWrap->setFixedHeight(38);
+    QHBoxLayout* twLay = new QHBoxLayout(tabWrap);
+    twLay->setContentsMargins(3, 2, 3, 2);
+
+    m_modelTabBar = new LiquidGlassTabBar();
+    m_modelTabBar->setPillHeight(34);
+    m_modelTabBar->addTab(static_cast<int>(Upscaler::RealESRGAN_x4), "4× General", "", "",
+                          Upscaler::getModelName(Upscaler::RealESRGAN_x4));
+    m_modelTabBar->addTab(static_cast<int>(Upscaler::RealESRGAN_x2), "2× General", "", "",
+                          Upscaler::getModelName(Upscaler::RealESRGAN_x2));
+    m_modelTabBar->addTab(static_cast<int>(Upscaler::RealESRGAN_x4_anime), "4× Anime", "", "",
+                          Upscaler::getModelName(Upscaler::RealESRGAN_x4_anime));
+    twLay->addWidget(m_modelTabBar);
+    modelLay->addWidget(tabWrap);
 
     m_descLabel = new QLabel();
     m_descLabel->setWordWrap(true);
-    m_descLabel->setStyleSheet("color: #aaa; font-size: 12px; padding-top: 4px;");
-    modelLayout->addWidget(m_descLabel);
+    m_descLabel->setStyleSheet(QString(
+        "color: %1; font-size: 11px; font-weight: 600; "
+        "background-color: rgba(%2,%3,%4,%5); border: 1px solid rgba(%6,%7,%8,%9); "
+        "border-radius: 12px; padding: 9px 13px;"
+    ).arg(th.badgeText.name())
+     .arg(th.badgeBg.red()).arg(th.badgeBg.green()).arg(th.badgeBg.blue()).arg(th.badgeBg.alpha())
+     .arg(th.badgeBorder.red()).arg(th.badgeBorder.green()).arg(th.badgeBorder.blue()).arg(th.badgeBorder.alpha()));
+    modelLay->addWidget(m_descLabel);
+    root->addWidget(modelCard);
 
-    mainLayout->addWidget(modelGroup);
+    // Model Cache Status Card
+    GlassPanel* stCard = new GlassPanel();
+    stCard->setCornerRadius(16.0);
+    stCard->setAccentGlow(false);
+    QVBoxLayout* stLay = new QVBoxLayout(stCard);
+    stLay->setContentsMargins(16, 12, 16, 12);
+    stLay->setSpacing(8);
 
-    // Status & Download group
-    QGroupBox* statusGroup = new QGroupBox("Model Status");
-    QVBoxLayout* statusLayout = new QVBoxLayout(statusGroup);
-    statusLayout->setSpacing(10);
-    statusLayout->setContentsMargins(16, 20, 16, 16);
-
-    QHBoxLayout* statusRow = new QHBoxLayout();
+    QHBoxLayout* stRow = new QHBoxLayout();
     m_statusLabel = new QLabel();
-    m_statusLabel->setStyleSheet("font-size: 13px; font-weight: bold;");
-    statusRow->addWidget(m_statusLabel, 1);
-
-    m_downloadBtn = new QPushButton("Download Model");
-    m_downloadBtn->setMinimumWidth(130);
-    m_downloadBtn->setMinimumHeight(32);
-    statusRow->addWidget(m_downloadBtn);
-    statusLayout->addLayout(statusRow);
+    m_statusLabel->setStyleSheet("background: transparent;");
+    m_downloadBtn = new GlassButton("Download Model", GlassButton::Ghost);
+    stRow->addWidget(m_statusLabel, 1);
+    stRow->addWidget(m_downloadBtn);
+    stLay->addLayout(stRow);
 
     m_downloadProgress = new QProgressBar();
+    m_downloadProgress->setFixedHeight(8);
+    m_downloadProgress->setTextVisible(false);
     m_downloadProgress->setRange(0, 100);
     m_downloadProgress->setValue(0);
     m_downloadProgress->setVisible(false);
-    statusLayout->addWidget(m_downloadProgress);
+    stLay->addWidget(m_downloadProgress);
+    root->addWidget(stCard);
 
-    mainLayout->addWidget(statusGroup);
+    // Bottom Actions
+    QHBoxLayout* btnRow = new QHBoxLayout();
+    btnRow->setSpacing(10);
+    btnRow->addStretch();
 
-    mainLayout->addStretch();
+    m_cancelBtn = new GlassButton("Cancel", GlassButton::Ghost);
+    m_cancelBtn->setMinimumSize(100, 38);
 
-    // Bottom buttons
-    QHBoxLayout* buttonLayout = new QHBoxLayout();
-    buttonLayout->setSpacing(12);
-    buttonLayout->addStretch();
-
-    m_cancelBtn = new QPushButton("Cancel");
-    m_cancelBtn->setMinimumWidth(100);
-    m_cancelBtn->setMinimumHeight(36);
-
-    m_upscaleBtn = new QPushButton("Upscale");
+    m_upscaleBtn = new GlassButton("Upscale Image", GlassButton::Primary);
+    m_upscaleBtn->setIconName("upscale");
     m_upscaleBtn->setDefault(true);
-    m_upscaleBtn->setMinimumWidth(100);
-    m_upscaleBtn->setMinimumHeight(36);
-    m_upscaleBtn->setStyleSheet("background-color: #506090; font-weight: bold;");
+    m_upscaleBtn->setMinimumSize(156, 38);
 
-    buttonLayout->addWidget(m_cancelBtn);
-    buttonLayout->addWidget(m_upscaleBtn);
-    mainLayout->addLayout(buttonLayout);
+    btnRow->addWidget(m_cancelBtn);
+    btnRow->addWidget(m_upscaleBtn);
+    root->addLayout(btnRow);
 
-    // Connections
-    connect(m_modelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &UpscaleDialog::onModelChanged);
+    connect(m_modelTabBar, &LiquidGlassTabBar::tabSelected, this, &UpscaleDialog::onModelChanged);
     connect(m_downloadBtn, &QPushButton::clicked, this, &UpscaleDialog::onDownloadClicked);
     connect(m_upscaleBtn, &QPushButton::clicked, this, &UpscaleDialog::onUpscaleClicked);
     connect(m_cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
 }
 
 Upscaler::Model UpscaleDialog::getSelectedModel() const {
-    return static_cast<Upscaler::Model>(m_modelCombo->currentData().toInt());
+    return static_cast<Upscaler::Model>(m_modelTabBar->currentId());
 }
 
 int UpscaleDialog::getScale() const {
     return Upscaler::getModelScale(getSelectedModel());
 }
 
-void UpscaleDialog::onModelChanged(int /*index*/) {
+void UpscaleDialog::onModelChanged(int /*id*/) {
     updateModelStatus();
 }
 
 void UpscaleDialog::updateModelStatus() {
     Upscaler::Model model = getSelectedModel();
-    m_descLabel->setText(Upscaler::getModelDescription(model));
+    m_descLabel->setText(QString("%1  ·  %2")
+        .arg(Upscaler::getModelName(model))
+        .arg(Upscaler::getModelDescription(model)));
 
     if (m_upscaler->isModelAvailable(model)) {
-        m_statusLabel->setText("Model Ready (Downloaded)");
-        m_statusLabel->setStyleSheet("color: #60c080; font-size: 13px; font-weight: bold;");
+        m_statusLabel->setText("●  Model Cached Offline & Ready");
+        m_statusLabel->setStyleSheet("color: #30d158; font-size: 12px; font-weight: 600; background: transparent;");
         m_downloadBtn->setVisible(false);
         m_upscaleBtn->setEnabled(true);
     } else {
-        m_statusLabel->setText("Model Not Downloaded");
-        m_statusLabel->setStyleSheet("color: #e0a050; font-size: 13px; font-weight: bold;");
+        m_statusLabel->setText("●  Model Not Downloaded Yet");
+        m_statusLabel->setStyleSheet("color: #ffd60a; font-size: 12px; font-weight: 600; background: transparent;");
         m_downloadBtn->setVisible(true);
         m_downloadBtn->setEnabled(true);
     }
@@ -127,12 +172,12 @@ void UpscaleDialog::onDownloadClicked() {
     Upscaler::Model model = getSelectedModel();
 
     m_downloadBtn->setEnabled(false);
-    m_modelCombo->setEnabled(false);
+    m_modelTabBar->setEnabled(false);
     m_upscaleBtn->setEnabled(false);
     m_downloadProgress->setVisible(true);
     m_downloadProgress->setValue(0);
     m_statusLabel->setText("Downloading model...");
-    m_statusLabel->setStyleSheet("color: #70a0d0; font-size: 13px; font-weight: bold;");
+    m_statusLabel->setStyleSheet("color: #64d2ff; font-size: 12px; font-weight: 600; background: transparent;");
 
     bool ok = m_upscaler->downloadModel(model, [this](qint64 received, qint64 total) {
         if (total > 0) {
@@ -149,24 +194,25 @@ void UpscaleDialog::onDownloadClicked() {
     });
 
     m_downloadProgress->setVisible(false);
-    m_modelCombo->setEnabled(true);
+    m_modelTabBar->setEnabled(true);
 
     if (ok) {
         updateModelStatus();
     } else {
         updateModelStatus();
-        QMessageBox::warning(this, "Download Failed",
-            "Failed to download the AI upscaling model.\nPlease check your internet connection and try again.");
+        GlassDialog::warning(this, "Download Failed",
+            "Failed to download the AI upscaling model.",
+            "Please check your internet connection and try again.");
     }
 }
 
 void UpscaleDialog::onUpscaleClicked() {
     Upscaler::Model model = getSelectedModel();
     if (!m_upscaler->isModelAvailable(model)) {
-        auto reply = QMessageBox::question(this, "Model Required",
-            "The selected AI model is not downloaded yet.\nWould you like to download it now?",
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
-        if (reply == QMessageBox::Yes) {
+        bool yes = GlassDialog::confirm(this, "Model Required",
+            "The selected Real-ESRGAN AI model is not downloaded yet.",
+            "Would you like to download it now?", "Download Now", "Cancel");
+        if (yes) {
             onDownloadClicked();
             if (!m_upscaler->isModelAvailable(model)) {
                 return;

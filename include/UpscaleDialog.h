@@ -1,14 +1,12 @@
 #ifndef UPSCALEDIALOG_H
 #define UPSCALEDIALOG_H
 
-#include <QDialog>
-#include <QComboBox>
 #include <QLabel>
-#include <QPushButton>
 #include <QProgressBar>
 #include "Upscaler.h"
+#include "GlassWidgets.h"
 
-class UpscaleDialog : public QDialog {
+class UpscaleDialog : public GlassModalDialog {
     Q_OBJECT
 
 public:
@@ -18,7 +16,7 @@ public:
     int getScale() const;
 
 private slots:
-    void onModelChanged(int index);
+    void onModelChanged(int id);
     void onDownloadClicked();
     void onUpscaleClicked();
 
@@ -27,13 +25,13 @@ private:
     void updateModelStatus();
 
     Upscaler* m_upscaler;
-    QComboBox* m_modelCombo;
-    QLabel* m_descLabel;
-    QLabel* m_statusLabel;
-    QProgressBar* m_downloadProgress;
-    QPushButton* m_downloadBtn;
-    QPushButton* m_upscaleBtn;
-    QPushButton* m_cancelBtn;
+    LiquidGlassTabBar* m_modelTabBar = nullptr;
+    QLabel* m_descLabel = nullptr;
+    QLabel* m_statusLabel = nullptr;
+    QProgressBar* m_downloadProgress = nullptr;
+    GlassButton* m_downloadBtn = nullptr;
+    GlassButton* m_upscaleBtn = nullptr;
+    GlassButton* m_cancelBtn = nullptr;
 };
 
 #endif // UPSCALEDIALOG_H

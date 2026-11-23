@@ -3,94 +3,113 @@
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
-#include <QGroupBox>
 #include <QFileDialog>
-#include <QLineEdit>
-#include <QMessageBox>
 
 ExportDialog::ExportDialog(ImageProcessor* processor, QWidget* parent)
-    : QDialog(parent)
+    : GlassModalDialog("Export Transparent PNG", parent)
     , m_processor(processor)
 {
-    setWindowTitle("Export Image");
-    setMinimumSize(500, 600);
-    setModal(true);
+    setMinimumSize(520, 640);
     setupUI();
     updatePreview();
 }
 
 void ExportDialog::setupUI() {
-    QVBoxLayout* mainLayout = new QVBoxLayout(this);
-    mainLayout->setSpacing(16);
-    mainLayout->setContentsMargins(20, 20, 20, 20);
+    const GlassTheme& th = ThemeManager::instance().current();
+    QVBoxLayout* root = contentLayout();
 
-    // Preview section
-    QGroupBox* previewGroup = new QGroupBox("Preview");
-    QVBoxLayout* previewLayout = new QVBoxLayout(previewGroup);
-    
+    // Preview Liquid Glass Card
+    GlassPanel* previewCard = new GlassPanel();
+    previewCard->setCornerRadius(20.0);
+    previewCard->setAccentGlow(true);
+    QVBoxLayout* prevLay = new QVBoxLayout(previewCard);
+    prevLay->setContentsMargins(16, 14, 16, 16);
+    prevLay->setSpacing(10);
+
+    QHBoxLayout* hdrRow = new QHBoxLayout();
+    QLabel* titleLbl = new QLabel("Export Preview");
+    titleLbl->setStyleSheet("color: #ffffff; font-size: 16px; font-weight: 700; background: transparent;");
+    QLabel* badgeLbl = new QLabel("Lossless RGBA PNG");
+    badgeLbl->setStyleSheet(QString(
+        "color: %1; font-size: 11px; font-weight: 700; "
+        "background-color: rgba(%2,%3,%4,%5); border: 1px solid rgba(%6,%7,%8,%9); "
+        "border-radius: 10px; padding: 3px 10px;"
+    ).arg(th.badgeText.name())
+     .arg(th.badgeBg.red()).arg(th.badgeBg.green()).arg(th.badgeBg.blue()).arg(th.badgeBg.alpha())
+     .arg(th.badgeBorder.red()).arg(th.badgeBorder.green()).arg(th.badgeBorder.blue()).arg(th.badgeBorder.alpha()));
+    hdrRow->addWidget(titleLbl);
+    hdrRow->addStretch();
+    hdrRow->addWidget(badgeLbl);
+    prevLay->addLayout(hdrRow);
+
     m_previewLabel = new QLabel();
-    m_previewLabel->setMinimumSize(300, 300);
+    m_previewLabel->setMinimumSize(320, 290);
     m_previewLabel->setAlignment(Qt::AlignCenter);
-    m_previewLabel->setStyleSheet("background-color: #2a2a2e; border-radius: 8px;");
-    previewLayout->addWidget(m_previewLabel);
-    mainLayout->addWidget(previewGroup);
+    m_previewLabel->setStyleSheet(
+        "background-color: rgba(12, 14, 20, 200); "
+        "border: 1px solid rgba(255, 255, 255, 30); "
+        "border-radius: 14px;");
+    prevLay->addWidget(m_previewLabel, 1);
+    root->addWidget(previewCard, 1);
 
-    // Edge Softening section
-    QGroupBox* softenGroup = new QGroupBox("Edge Softening (Removes white fringing)");
-    QVBoxLayout* softenLayout = new QVBoxLayout(softenGroup);
-    
-    QHBoxLayout* sliderLayout = new QHBoxLayout();
-    QLabel* offLabel = new QLabel("Off");
-    m_softeningSlider = new QSlider(Qt::Horizontal);
-    m_softeningSlider->setRange(0, 5);
-    m_softeningSlider->setValue(0);
-    m_softeningSlider->setTickPosition(QSlider::TicksBelow);
-    m_softeningSlider->setTickInterval(1);
-    QLabel* maxLabel = new QLabel("Max");
-    m_softeningValueLabel = new QLabel("0");
-    m_softeningValueLabel->setMinimumWidth(30);
-    m_softeningValueLabel->setAlignment(Qt::AlignCenter);
-    
-    sliderLayout->addWidget(offLabel);
-    sliderLayout->addWidget(m_softeningSlider);
-    sliderLayout->addWidget(maxLabel);
-    sliderLayout->addWidget(m_softeningValueLabel);
-    softenLayout->addLayout(sliderLayout);
-    
-    QLabel* hintLabel = new QLabel("Higher values remove more edge artifacts but may blur fine details.");
-    hintLabel->setStyleSheet("color: #888; font-size: 11px;");
-    hintLabel->setWordWrap(true);
-    softenLayout->addWidget(hintLabel);
-    
-    mainLayout->addWidget(softenGroup);
+    // Edge Softening Liquid Glass Card
+    GlassPanel* softCard = new GlassPanel();
+    softCard->setCornerRadius(18.0);
+    QVBoxLayout* softLay = new QVBoxLayout(softCard);
+    softLay->setContentsMargins(18, 14, 18, 14);
+    softLay->setSpacing(6);
 
-    // File path section
-    QGroupBox* pathGroup = new QGroupBox("Save Location");
-    QHBoxLayout* pathLayout = new QHBoxLayout(pathGroup);
-    
+    m_softeningSlider = new GlassSliderControl("Edge Softening (Anti-Fringe)", 0, 5, 0);
+    m_softeningSlider->setZeroLabel("Off");
+    softLay->addWidget(m_softeningSlider);
+
+    QLabel* hintLbl = new QLabel("Higher levels remove light edge halos while preserving smooth alpha gradients.");
+    hintLbl->setStyleSheet("color: #9faac0; font-size: 11px; background: transparent;");
+    hintLbl->setWordWrap(true);
+    softLay->addWidget(hintLbl);
+    root->addWidget(softCard);
+
+    // Save Destination Liquid Glass Card
+    GlassPanel* pathCard = new GlassPanel();
+    pathCard->setCornerRadius(18.0);
+    QVBoxLayout* pathWrap = new QVBoxLayout(pathCard);
+    pathWrap->setContentsMargins(18, 13, 18, 14);
+    pathWrap->setSpacing(8);
+
+    QLabel* pathTitle = new QLabel("Save Location");
+    pathTitle->setStyleSheet("color: #c8d2e2; font-size: 11px; font-weight: 700; background: transparent;");
+    pathWrap->addWidget(pathTitle);
+
+    QHBoxLayout* pathRow = new QHBoxLayout();
+    pathRow->setSpacing(8);
     m_pathEdit = new QLineEdit();
-    m_pathEdit->setPlaceholderText("Select export location...");
-    m_browseBtn = new QPushButton("Browse...");
-    
-    pathLayout->addWidget(m_pathEdit);
-    pathLayout->addWidget(m_browseBtn);
-    mainLayout->addWidget(pathGroup);
+    m_pathEdit->setPlaceholderText("Choose export destination (*.png)...");
+    m_pathEdit->setMinimumHeight(34);
+    m_browseBtn = new GlassButton("Browse...", GlassButton::Ghost);
+    m_browseBtn->setMinimumHeight(34);
+    pathRow->addWidget(m_pathEdit, 1);
+    pathRow->addWidget(m_browseBtn);
+    pathWrap->addLayout(pathRow);
+    root->addWidget(pathCard);
 
-    // Buttons
-    QHBoxLayout* buttonLayout = new QHBoxLayout();
-    buttonLayout->addStretch();
-    
-    m_cancelBtn = new QPushButton("Cancel");
-    m_exportBtn = new QPushButton("Export");
+    // Bottom Actions
+    QHBoxLayout* btnRow = new QHBoxLayout();
+    btnRow->setSpacing(10);
+    btnRow->addStretch();
+
+    m_cancelBtn = new GlassButton("Cancel", GlassButton::Ghost);
+    m_cancelBtn->setMinimumSize(100, 38);
+
+    m_exportBtn = new GlassButton("Export PNG", GlassButton::White);
+    m_exportBtn->setIconName("export");
     m_exportBtn->setDefault(true);
-    m_exportBtn->setStyleSheet("background-color: #506090; font-weight: bold;");
-    
-    buttonLayout->addWidget(m_cancelBtn);
-    buttonLayout->addWidget(m_exportBtn);
-    mainLayout->addLayout(buttonLayout);
+    m_exportBtn->setMinimumSize(144, 38);
 
-    // Connections
-    connect(m_softeningSlider, &QSlider::valueChanged, this, &ExportDialog::onSofteningChanged);
+    btnRow->addWidget(m_cancelBtn);
+    btnRow->addWidget(m_exportBtn);
+    root->addLayout(btnRow);
+
+    connect(m_softeningSlider, &GlassSliderControl::valueChanged, this, &ExportDialog::onSofteningChanged);
     connect(m_browseBtn, &QPushButton::clicked, this, &ExportDialog::onBrowseClicked);
     connect(m_exportBtn, &QPushButton::clicked, this, &ExportDialog::onExportClicked);
     connect(m_cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
@@ -98,7 +117,6 @@ void ExportDialog::setupUI() {
 
 void ExportDialog::onSofteningChanged(int level) {
     m_softeningLevel = level;
-    m_softeningValueLabel->setText(QString::number(level));
     updatePreview();
 }
 
@@ -106,7 +124,7 @@ void ExportDialog::onBrowseClicked() {
     QString filename = QFileDialog::getSaveFileName(
         this, "Export Image", QString(), "PNG Image (*.png)"
     );
-    
+
     if (!filename.isEmpty()) {
         if (!filename.endsWith(".png", Qt::CaseInsensitive)) {
             filename += ".png";
@@ -118,40 +136,37 @@ void ExportDialog::onBrowseClicked() {
 
 void ExportDialog::onExportClicked() {
     m_exportPath = m_pathEdit->text();
-    
+
     if (m_exportPath.isEmpty()) {
-        QMessageBox::warning(this, "Export", "Please select a save location.");
+        GlassDialog::warning(this, "Save Location Required", "Please choose an export location before saving.");
         return;
     }
-    
+
     if (!m_exportPath.endsWith(".png", Qt::CaseInsensitive)) {
         m_exportPath += ".png";
     }
-    
+
     accept();
 }
 
 void ExportDialog::updatePreview() {
     if (!m_processor || !m_processor->hasImage()) return;
-    
-    // Get image with softening applied
+
     cv::Mat processed;
     if (m_softeningLevel > 0) {
         processed = m_processor->applySoftening(m_processor->getCurrentImage(), m_softeningLevel);
     } else {
         processed = m_processor->getCurrentImage();
     }
-    
-    // Convert to QImage
+
     cv::Mat rgba;
     cv::cvtColor(processed, rgba, cv::COLOR_BGRA2RGBA);
-    QImage img(rgba.data, rgba.cols, rgba.rows, 
+    QImage img(rgba.data, rgba.cols, rgba.rows,
                static_cast<int>(rgba.step), QImage::Format_RGBA8888);
-    
-    // Scale to fit preview
+
+    QSize targetSz = m_previewLabel->size().expandedTo(QSize(320, 290)) - QSize(20, 20);
     QPixmap pixmap = QPixmap::fromImage(img.copy());
-    pixmap = pixmap.scaled(m_previewLabel->size() - QSize(20, 20), 
-                          Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    
+    pixmap = pixmap.scaled(targetSz, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+
     m_previewLabel->setPixmap(pixmap);
 }

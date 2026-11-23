@@ -9,6 +9,11 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
+
+namespace OnnxRuntimeHelper {
+struct SessionBundle;
+}
 
 class Upscaler : public QObject {
     Q_OBJECT
@@ -38,6 +43,7 @@ public:
 
     // Upscale image (supports live pause/resume & cancellation)
     cv::Mat upscale(const cv::Mat& input, Model model, int scale = 4);
+    QString activeBackend() const;
 
     // Get model info
     static QString getModelName(Model model);
@@ -48,22 +54,26 @@ public:
 signals:
     void progressChanged(int percent);
     void statusChanged(const QString& statusText);
+    void progressStageChanged(int basePercent, int nextPercent, const QString& statusText);
+    void backendChanged(const QString& backendLabel);
     void error(const QString& message);
 
 private:
     QString getModelPath(Model model);
-    bool loadModel(Model model);
+    bool loadModel(Model model, bool allowGpu = true);
     void unloadModel();
     bool waitIfPaused();
 
-    struct OnnxSession;
-    std::unique_ptr<OnnxSession> m_session;
+    std::unique_ptr<OnnxRuntimeHelper::SessionBundle> m_session;
     Model m_currentModel = RealESRGAN_x4;
 
     std::atomic<bool> m_paused{false};
     std::atomic<bool> m_cancelled{false};
     mutable QMutex m_pauseMutex;
     QWaitCondition m_pauseCond;
+    std::mutex m_terminateMutex;
+    void (*m_activeTerminateFn)(void*) = nullptr;
+    void* m_activeTerminateCtx = nullptr;
 };
 
 #endif // UPSCALER_H

@@ -19,13 +19,28 @@ public:
         MaskErrorDimensionMismatch // Mask dimensions != current image dimensions
     };
 
+    struct LoadedImageData {
+        cv::Mat originalImage;
+        cv::Mat currentImage;
+        cv::Mat initialAlpha;
+        QImage displayPremul;
+        QImage displayMip4;
+        bool hasEmbeddedOriginal = false;
+        bool ok = false;
+    };
+
     ImageProcessor();
     ~ImageProcessor();
 
-    // File operations
+    // File operations (sync + thread-safe static worker paths for non-blocking UI)
     bool loadImage(const QString& path);
+    static LoadedImageData decodeImageFile(const QString& path, bool buildDisplayCaches = false);
+    void applyLoadedData(LoadedImageData&& data);
+
     bool saveImage(const QString& path);
     bool exportImage(const QString& path, int edgeSoftenLevel = 0);
+    static bool exportImageData(const cv::Mat& currentImg, const cv::Mat& originalImg,
+                                const QString& path, int edgeSoftenLevel = 0);
 
     // Apply external mask or transparent cutout image (requires matching width x height)
     MaskApplyStatus applyExternalMask(const QString& maskPath, QSize* outMaskSize = nullptr);
@@ -54,14 +69,14 @@ public:
     void clear();
 
     // Tools - viewport bounded
-    void autoColorRemove(int x, int y, int tolerance, const QRect& viewportBounds);
+    void autoColorRemove(int x, int y, int tolerance, const QRect& viewportBounds, QRect* outDirtyRect = nullptr);
     void eraseWithBrush(int x, int y, int radius, float hardness = 0.8f);
     void eraseAlongPath(const QPoint& start, const QPoint& end, int radius, float hardness = 0.8f);
     void repairWithBrush(int x, int y, int radius);
     void repairAlongPath(const QPoint& start, const QPoint& end, int radius);
 
     // Edge softening for export
-    cv::Mat applySoftening(const cv::Mat& image, int level);
+    static cv::Mat applySoftening(const cv::Mat& image, int level);
 
     // State management
     cv::Mat captureState() const;
@@ -72,7 +87,8 @@ public:
     void setProgressCallback(ProgressCallback callback) { m_progressCallback = callback; }
 
 private:
-    void ensureAlphaChannel(cv::Mat& image);
+    static void ensureAlphaChannel(cv::Mat& image);
+    static void fillPremulDisplayRegion(const cv::Mat& srcBgra, QImage& target, const QRect& region);
     QImage matToQImage(const cv::Mat& mat) const;
     bool colorMatches(const cv::Vec4b& c1, const cv::Vec4b& c2, int tolerance) const;
 

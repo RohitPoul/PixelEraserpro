@@ -24,7 +24,7 @@ public:
     void saveStateBeforeChange();
     
     // Save initial state when image is loaded
-    void saveInitialState();
+    void saveInitialState(const cv::Mat& precomputedAlpha = cv::Mat());
 
     // Undo/Redo
     bool canUndo() const;

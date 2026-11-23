@@ -53,14 +53,14 @@ void HistoryManager::saveStateBeforeChange() {
     emit historyChanged();
 }
 
-void HistoryManager::saveInitialState() {
+void HistoryManager::saveInitialState(const cv::Mat& precomputedAlpha) {
     if (!m_processor || !m_processor->hasImage()) return;
     
     // Clear existing history and save initial state
     m_history.clear();
     m_currentIndex = -1;
     
-    cv::Mat state = m_processor->captureState();
+    cv::Mat state = precomputedAlpha.empty() ? m_processor->captureState() : precomputedAlpha.clone();
     
     HistoryState historyState;
     historyState.imageState = state;
