@@ -84,7 +84,11 @@ void UpdateChecker::onReplyFinished(QNetworkReply *reply)
         const QString url = assetObj["browser_download_url"].toString();
         const qint64 size = static_cast<qint64>(assetObj["size"].toDouble(0.0));
 
-        if (name.endsWith(".exe", Qt::CaseInsensitive)) {
+        if (name.endsWith(".zip", Qt::CaseInsensitive) && name.contains("patch", Qt::CaseInsensitive)) {
+            info.patchUrl = url;
+            info.patchName = name;
+            info.patchSize = size;
+        } else if (name.endsWith(".exe", Qt::CaseInsensitive)) {
             if (info.installerUrl.isEmpty() || name.contains("setup", Qt::CaseInsensitive)) {
                 info.installerUrl = url;
                 info.installerName = name;
@@ -100,8 +104,9 @@ void UpdateChecker::onReplyFinished(QNetworkReply *reply)
     }
 
     m_latestVersion = info.version;
-    m_downloadUrl = info.hasInstaller() ? info.installerUrl
-                  : (info.hasPortable() ? info.portableUrl : info.releasePageUrl);
+    m_downloadUrl = info.hasPatch() ? info.patchUrl
+                  : (info.hasInstaller() ? info.installerUrl
+                  : (info.hasPortable() ? info.portableUrl : info.releasePageUrl));
     m_latestInfo = info;
 
     if (isNewerVersion(info.version, m_currentVersion)) {

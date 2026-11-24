@@ -31,12 +31,15 @@ private slots:
     void onDownloadFinished();
 
 private:
+    enum DownloadMode { ModeLivePatch = 0, ModeInstaller = 1, ModePortable = 2 };
+
     void setupUI();
     void updateActionLabel();
+    DownloadMode selectedMode() const;
     QString selectedUrl() const;
     QString selectedFileName() const;
     qint64 selectedExpectedSize() const;
-    bool isSelectedInstaller() const;
+    bool applyLivePatchAndRestart(const QString& patchZipPath);
 
     static QString formatBytes(qint64 bytes);
     static QString formatSpeed(double bytesPerSec);
@@ -46,6 +49,7 @@ private:
     QString m_currentVersion;
 
     LiquidGlassTabBar* m_formatTabs = nullptr;
+    QLabel* m_modeHintLabel = nullptr;
     QTextBrowser* m_notesBrowser = nullptr;
     GlassPanel* m_progressCard = nullptr;
     QLabel* m_statusLabel = nullptr;

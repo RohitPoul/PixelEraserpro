@@ -61,6 +61,7 @@ private slots:
     void zoomToActual();
     void toggleCompareOriginal();
     void toggleInfraredMode();
+    void cleanInfraredDust();
     void toggleSidebar();
     void toggleMaximizeRestore();
     void togglePauseActiveJob();
@@ -157,6 +158,7 @@ private:
     GlassSliderControl* m_lastActiveSlider = nullptr;
     GlassToggleSwitch* m_compareSwitch = nullptr;
     QButtonGroup* m_bgGroup = nullptr;
+    GlassButton* m_cleanIrDustBtn = nullptr;
     QLabel* m_themeNameLabel = nullptr;
     QWidget* m_queueSection = nullptr;
     QLabel* m_queueHeaderLabel = nullptr;

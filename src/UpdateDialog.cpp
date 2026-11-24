@@ -94,8 +94,11 @@ void UpdateDialog::setupUI() {
     nLay->addWidget(m_notesBrowser, 1);
     root->addWidget(notesCard, 1);
 
-    // 3) PACKAGE SELECTOR (Installer EXE vs Portable ZIP when both are available)
-    if (m_info.hasInstaller() && m_info.hasPortable()) {
+    // 3) PACKAGE SELECTOR (Live Patch ~350KB vs Full Installer vs Portable ZIP)
+    const int availableCount = (m_info.hasPatch() ? 1 : 0)
+                             + (m_info.hasInstaller() ? 1 : 0)
+                             + (m_info.hasPortable() ? 1 : 0);
+    if (availableCount > 1) {
         GlassPanel* fmtWrap = new GlassPanel();
         fmtWrap->setCornerRadius(17.0);
         fmtWrap->setSubSurface(true);
@@ -106,15 +109,31 @@ void UpdateDialog::setupUI() {
 
         m_formatTabs = new LiquidGlassTabBar();
         m_formatTabs->setPillHeight(34);
-        const QString exeTxt = m_info.installerSize > 0
-            ? QString("Installer (.exe · %1)").arg(formatBytes(m_info.installerSize))
-            : QString("Installer (.exe)");
-        const QString zipTxt = m_info.portableSize > 0
-            ? QString("Portable (.zip · %1)").arg(formatBytes(m_info.portableSize))
-            : QString("Portable (.zip)");
-        m_formatTabs->addTab(0, exeTxt, "", "", "Downloads and launches the Windows installer automatically");
-        m_formatTabs->addTab(1, zipTxt, "", "", "Downloads the standalone portable ZIP package");
-        m_formatTabs->setCurrentId(0, false);
+        int defaultMode = -1;
+        if (m_info.hasPatch()) {
+            const QString patchTxt = m_info.patchSize > 0
+                ? QString("Live Patch (%1)").arg(formatBytes(m_info.patchSize))
+                : QString("Live Patch");
+            m_formatTabs->addTab(ModeLivePatch, patchTxt, "", "", "Downloads only updated files and restarts automatically");
+            defaultMode = ModeLivePatch;
+        }
+        if (m_info.hasInstaller()) {
+            const QString exeTxt = m_info.installerSize > 0
+                ? QString("Installer (%1)").arg(formatBytes(m_info.installerSize))
+                : QString("Installer (.exe)");
+            m_formatTabs->addTab(ModeInstaller, exeTxt, "", "", "Full Windows installer (.exe)");
+            if (defaultMode < 0) defaultMode = ModeInstaller;
+        }
+        if (m_info.hasPortable()) {
+            const QString zipTxt = m_info.portableSize > 0
+                ? QString("Portable (%1)").arg(formatBytes(m_info.portableSize))
+                : QString("Portable (.zip)");
+            m_formatTabs->addTab(ModePortable, zipTxt, "", "", "Full standalone portable ZIP");
+            if (defaultMode < 0) defaultMode = ModePortable;
+        }
+        if (defaultMode >= 0) {
+            m_formatTabs->setCurrentId(defaultMode, false);
+        }
         fLay->addWidget(m_formatTabs);
         root->addWidget(fmtWrap);
 
@@ -122,6 +141,11 @@ void UpdateDialog::setupUI() {
             updateActionLabel();
         });
     }
+
+    m_modeHintLabel = new QLabel();
+    m_modeHintLabel->setStyleSheet("color: #9ba3b4; font-size: 11px; background: transparent;");
+    m_modeHintLabel->setWordWrap(true);
+    root->addWidget(m_modeHintLabel);
 
     // 4) LIVE DOWNLOAD PROGRESS CARD (Hidden until download starts)
     m_progressCard = new GlassPanel();
@@ -198,53 +222,88 @@ void UpdateDialog::setupUI() {
     updateActionLabel();
 }
 
-bool UpdateDialog::isSelectedInstaller() const {
+UpdateDialog::DownloadMode UpdateDialog::selectedMode() const {
     if (m_formatTabs) {
-        return m_formatTabs->currentId() == 0;
+        return static_cast<DownloadMode>(m_formatTabs->currentId());
     }
-    return m_info.hasInstaller();
+    if (m_info.hasPatch()) return ModeLivePatch;
+    if (m_info.hasInstaller()) return ModeInstaller;
+    return ModePortable;
 }
 
 QString UpdateDialog::selectedUrl() const {
-    if (isSelectedInstaller() && m_info.hasInstaller()) return m_info.installerUrl;
+    const DownloadMode mode = selectedMode();
+    if (mode == ModeLivePatch && m_info.hasPatch()) return m_info.patchUrl;
+    if (mode == ModeInstaller && m_info.hasInstaller()) return m_info.installerUrl;
     if (m_info.hasPortable()) return m_info.portableUrl;
     return m_info.releasePageUrl;
 }
 
 QString UpdateDialog::selectedFileName() const {
-    if (isSelectedInstaller() && !m_info.installerName.isEmpty()) return m_info.installerName;
+    const DownloadMode mode = selectedMode();
+    if (mode == ModeLivePatch && !m_info.patchName.isEmpty()) return m_info.patchName;
+    if (mode == ModeInstaller && !m_info.installerName.isEmpty()) return m_info.installerName;
     if (!m_info.portableName.isEmpty()) return m_info.portableName;
     return QString("PixelEraserPro-%1.exe").arg(m_info.version);
 }
 
 qint64 UpdateDialog::selectedExpectedSize() const {
-    if (isSelectedInstaller() && m_info.installerSize > 0) return m_info.installerSize;
+    const DownloadMode mode = selectedMode();
+    if (mode == ModeLivePatch && m_info.patchSize > 0) return m_info.patchSize;
+    if (mode == ModeInstaller && m_info.installerSize > 0) return m_info.installerSize;
     if (m_info.portableSize > 0) return m_info.portableSize;
     return 0;
 }
 
 void UpdateDialog::updateActionLabel() {
-    if (!m_info.hasInstaller() && !m_info.hasPortable()) {
+    if (!m_info.hasPatch() && !m_info.hasInstaller() && !m_info.hasPortable()) {
         m_downloadBtn->setText("Open Release Page");
+        if (m_modeHintLabel) m_modeHintLabel->setText("Opens the GitHub release page in your browser.");
         return;
     }
-    m_downloadBtn->setText(isSelectedInstaller() ? "Download & Install" : "Download Portable");
+    switch (selectedMode()) {
+        case ModeLivePatch:
+            m_downloadBtn->setText("Update & Restart");
+            if (m_modeHintLabel) {
+                m_modeHintLabel->setText("Fast delta update: downloads only changed app files and restarts automatically — no reinstall needed.");
+            }
+            break;
+        case ModeInstaller:
+            m_downloadBtn->setText("Download & Install");
+            if (m_modeHintLabel) {
+                m_modeHintLabel->setText("Full Windows installer package (includes all runtime DLLs).");
+            }
+            break;
+        case ModePortable:
+            m_downloadBtn->setText("Download Portable");
+            if (m_modeHintLabel) {
+                m_modeHintLabel->setText("Standalone portable ZIP saved to your Downloads folder.");
+            }
+            break;
+    }
 }
 
 void UpdateDialog::startDownload() {
     if (m_isDownloading) return;
 
     const QString url = selectedUrl();
-    if (!m_info.hasInstaller() && !m_info.hasPortable()) {
+    if (!m_info.hasPatch() && !m_info.hasInstaller() && !m_info.hasPortable()) {
         QDesktopServices::openUrl(QUrl(url));
         accept();
         return;
     }
 
-    QString targetDir = isSelectedInstaller()
-        ? QDir::tempPath()
-        : QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
-    if (targetDir.isEmpty()) targetDir = QDir::tempPath();
+    const DownloadMode mode = selectedMode();
+    QString targetDir;
+    if (mode == ModeLivePatch) {
+        targetDir = QDir(QDir::tempPath()).filePath("PixelEraserPro_patch");
+        QDir().mkpath(targetDir);
+    } else if (mode == ModeInstaller) {
+        targetDir = QDir::tempPath();
+    } else {
+        targetDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+        if (targetDir.isEmpty()) targetDir = QDir::tempPath();
+    }
 
     m_savedFilePath = QDir(targetDir).filePath(selectedFileName());
     m_outFile.setFileName(m_savedFilePath);
@@ -389,7 +448,23 @@ void UpdateDialog::onDownloadFinished() {
     m_progressBar->setValue(1000);
     m_pctLabel->setText("100%");
 
-    if (isSelectedInstaller() && m_savedFilePath.endsWith(".exe", Qt::CaseInsensitive)) {
+    const DownloadMode mode = selectedMode();
+    if (mode == ModeLivePatch) {
+        m_statusLabel->setText("Applying live patch & restarting...");
+        m_speedMetaLabel->setText("Updating only changed files in-place — PixelEraser Pro will reopen in a second.");
+        if (applyLivePatchAndRestart(m_savedFilePath)) {
+            m_launchedInstaller = true;
+            accept();
+            QApplication::quit();
+        } else {
+            GlassDialog::error(this, "Live Patch Failed",
+                "Could not launch the in-place updater script. Try the Full Installer tab instead.",
+                m_savedFilePath);
+            if (m_formatTabs) m_formatTabs->setEnabled(true);
+            m_downloadBtn->setEnabled(true);
+            updateActionLabel();
+        }
+    } else if (mode == ModeInstaller && m_savedFilePath.endsWith(".exe", Qt::CaseInsensitive)) {
         m_statusLabel->setText("Launching installer...");
         m_speedMetaLabel->setText("PixelEraser Pro will close automatically so the update can install.");
         if (QProcess::startDetached(m_savedFilePath, QStringList())) {
@@ -409,6 +484,68 @@ void UpdateDialog::onDownloadFinished() {
         QProcess::startDetached("explorer.exe", QStringList() << "/select," << QDir::toNativeSeparators(m_savedFilePath));
         accept();
     }
+}
+
+bool UpdateDialog::applyLivePatchAndRestart(const QString& patchZipPath) {
+    const QString appDir = QDir::toNativeSeparators(QCoreApplication::applicationDirPath());
+    const QString appExe = QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
+    const QString patchDir = QDir::toNativeSeparators(QFileInfo(patchZipPath).absolutePath());
+    const QString stageDir = QDir::toNativeSeparators(QDir(patchDir).filePath("stage"));
+    const QString scriptPath = QDir::toNativeSeparators(QDir(patchDir).filePath("apply_patch.ps1"));
+    const qint64 pid = QCoreApplication::applicationPid();
+
+    // Test write permission in appDir (e.g. Program Files requires elevation; %LOCALAPPDATA% / Portable does not)
+    bool needsElevation = false;
+    {
+        QFile probe(QDir(appDir).filePath(".update_write_probe"));
+        if (probe.open(QIODevice::WriteOnly)) {
+            probe.close();
+            probe.remove();
+        } else {
+            needsElevation = true;
+        }
+    }
+
+    auto psEsc = [](QString s) { return s.replace("'", "''"); };
+
+    const QString psScript = QString(
+        "$ErrorActionPreference = 'SilentlyContinue'\n"
+        "$appPid = %1\n"
+        "for ($i = 0; $i -lt 40; $i++) {\n"
+        "    if (-not (Get-Process -Id $appPid -ErrorAction SilentlyContinue)) { break }\n"
+        "    Start-Sleep -Milliseconds 250\n"
+        "}\n"
+        "$stage = '%2'\n"
+        "if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }\n"
+        "New-Item -ItemType Directory -Path $stage -Force | Out-Null\n"
+        "tar.exe -xf '%3' -C $stage\n"
+        "Copy-Item -Path (Join-Path $stage '*') -Destination '%4' -Recurse -Force\n"
+        "Start-Process -FilePath '%5'\n"
+        "Start-Sleep -Milliseconds 400\n"
+        "Remove-Item -Path '%6' -Recurse -Force\n"
+    ).arg(pid)
+     .arg(psEsc(stageDir))
+     .arg(psEsc(QDir::toNativeSeparators(patchZipPath)))
+     .arg(psEsc(appDir))
+     .arg(psEsc(appExe))
+     .arg(psEsc(patchDir));
+
+    QFile sf(scriptPath);
+    if (!sf.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        return false;
+    }
+    sf.write(psScript.toUtf8());
+    sf.close();
+
+    if (needsElevation) {
+        const QString cmd = QString("Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','%1'")
+            .arg(psEsc(scriptPath));
+        return QProcess::startDetached("powershell.exe", QStringList()
+            << "-NoProfile" << "-WindowStyle" << "Hidden" << "-Command" << cmd);
+    }
+
+    return QProcess::startDetached("powershell.exe", QStringList()
+        << "-NoProfile" << "-ExecutionPolicy" << "Bypass" << "-WindowStyle" << "Hidden" << "-File" << scriptPath);
 }
 
 QString UpdateDialog::formatBytes(qint64 bytes) {

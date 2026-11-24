@@ -12,6 +12,9 @@ struct UpdateInfo {
     QString releaseTitle;
     QString releaseNotes;
     QString releasePageUrl;
+    QString patchUrl;
+    QString patchName;
+    qint64 patchSize = 0;
     QString installerUrl;
     QString installerName;
     qint64 installerSize = 0;
@@ -19,6 +22,7 @@ struct UpdateInfo {
     QString portableName;
     qint64 portableSize = 0;
 
+    bool hasPatch() const { return !patchUrl.isEmpty(); }
     bool hasInstaller() const { return !installerUrl.isEmpty(); }
     bool hasPortable() const { return !portableUrl.isEmpty(); }
 };

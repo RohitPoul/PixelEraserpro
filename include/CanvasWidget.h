@@ -46,6 +46,7 @@ public:
 
     int infraredDustChunks() const { return m_dustChunkCount; }
     int infraredGhostPixels() const { return m_ghostPixelCount; }
+    int cleanInfraredDustPixels();
 
     void setShowOriginal(bool show);
     bool isShowingOriginal() const { return m_showOriginal; }

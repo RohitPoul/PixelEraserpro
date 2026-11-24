@@ -534,6 +534,98 @@ void CanvasWidget::updateInfraredRegion(const QRect& imageRect) {
     rebuildInfraredMipRegion(clamped);
 }
 
+int CanvasWidget::cleanInfraredDustPixels() {
+    if (!m_processor || !m_processor->hasImage()) return 0;
+    cv::Mat& cur = m_processor->getCurrentImage();
+    if (cur.empty() || cur.channels() != 4) return 0;
+
+    const int H = cur.rows;
+    const int W = cur.cols;
+
+    // Use cached dust mask if valid; otherwise run the exact same connected-component pass synchronously
+    cv::Mat dustMask = m_irDustMask;
+    if (dustMask.empty() || dustMask.rows != H || dustMask.cols != W) {
+        cv::Mat nonZeroMask(H, W, CV_8UC1);
+        for (int y = 0; y < H; ++y) {
+            const cv::Vec4b* src = cur.ptr<cv::Vec4b>(y);
+            uchar* nzRow = nonZeroMask.ptr<uchar>(y);
+            for (int x = 0; x < W; ++x) {
+                nzRow[x] = (src[x][3] > 0) ? 255 : 0;
+            }
+        }
+        cv::Mat labels, stats, centroids;
+        const int numLabels = cv::connectedComponentsWithStats(nonZeroMask, labels, stats, centroids, 8, CV_32S);
+        int maxArea = 0;
+        for (int i = 1; i < numLabels; ++i) {
+            maxArea = std::max(maxArea, stats.at<int>(i, cv::CC_STAT_AREA));
+        }
+        constexpr int kMaxDustArea = 120;
+        std::vector<uchar> isDustLabel(static_cast<size_t>(numLabels), 0);
+        for (int i = 1; i < numLabels; ++i) {
+            int area = stats.at<int>(i, cv::CC_STAT_AREA);
+            if (area <= kMaxDustArea && (maxArea == 0 || area < static_cast<int>(maxArea * 0.15))) {
+                isDustLabel[static_cast<size_t>(i)] = 1;
+            }
+        }
+        dustMask = cv::Mat::zeros(H, W, CV_8UC1);
+        for (int y = 0; y < H; ++y) {
+            const int* lblRow = labels.ptr<int>(y);
+            uchar* dRow = dustMask.ptr<uchar>(y);
+            for (int x = 0; x < W; ++x) {
+                int lbl = lblRow[x];
+                if (lbl > 0 && isDustLabel[static_cast<size_t>(lbl)]) {
+                    dRow[x] = 255;
+                }
+            }
+        }
+    }
+
+    // Count first so we don't push an empty undo state if image is already 100% clean
+    int removedCount = 0;
+    for (int y = 0; y < H; ++y) {
+        const cv::Vec4b* row = cur.ptr<cv::Vec4b>(y);
+        const uchar* dRow = dustMask.ptr<uchar>(y);
+        for (int x = 0; x < W; ++x) {
+            const uchar a = row[x][3];
+            if (a > 0 && (dRow[x] != 0 || a <= 230)) {
+                ++removedCount;
+            }
+        }
+    }
+    if (removedCount == 0) return 0;
+
+    if (m_historyManager) {
+        m_historyManager->saveStateBeforeChange();
+    }
+
+    // Remove ONLY the exact infrared-highlighted pixels (neon pink detached specks + glowing orange/yellow a<=230 dust)
+    for (int y = 0; y < H; ++y) {
+        cv::Vec4b* row = cur.ptr<cv::Vec4b>(y);
+        const uchar* dRow = dustMask.ptr<uchar>(y);
+        for (int x = 0; x < W; ++x) {
+            const uchar a = row[x][3];
+            if (a > 0 && (dRow[x] != 0 || a <= 230)) {
+                row[x][3] = 0;
+            }
+        }
+    }
+
+    if (m_historyManager) {
+        m_historyManager->saveState();
+    }
+
+    if (m_bgType == Infrared) {
+        m_displayDirty = true;
+        m_displayMipDirty = true;
+        rebuildInfraredCache();
+    } else {
+        rebuildFullCache();
+    }
+    emit imageModified();
+    update();
+    return removedCount;
+}
+
 void CanvasWidget::paintBlurredBackdrop(QPainter& painter, const QRect& panelRectInCanvas) const {
     Q_UNUSED(painter);
     Q_UNUSED(panelRectInCanvas);

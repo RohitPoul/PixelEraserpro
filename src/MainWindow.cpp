@@ -364,6 +364,7 @@ void MainWindow::setupActions() {
     m_compareAction->setCheckable(true);
 
     addGlobal(QKeySequence("I"), &MainWindow::toggleInfraredMode);
+    addGlobal(QKeySequence("Shift+I"), &MainWindow::cleanInfraredDust);
     m_toggleSidebarAction = addGlobal(QKeySequence("Tab"), &MainWindow::toggleSidebar);
     addGlobal(QKeySequence("F1"), &MainWindow::showShortcuts);
     addGlobal(QKeySequence("Ctrl+,"), &MainWindow::openSettings);
@@ -396,6 +397,7 @@ void MainWindow::showMainMenu() {
     menu.addAction("Resize Canvas...       Ctrl+Alt+R", this, &MainWindow::resizeImage);
     menu.addSeparator();
     menu.addAction("Infrared Dust Scan     I", this, &MainWindow::toggleInfraredMode);
+    menu.addAction("Clean Infrared Dust    Shift+I", this, &MainWindow::cleanInfraredDust);
     menu.addAction("Compare Original       H", this, &MainWindow::toggleCompareOriginal);
     menu.addAction("Fit to Screen          Ctrl+0", this, &MainWindow::fitToScreen);
     menu.addAction("Actual Size (100%)     Ctrl+1", this, &MainWindow::zoomToActual);
@@ -719,6 +721,14 @@ void MainWindow::setupStudioLayout() {
     swRow->addWidget(swBlack);
     swRow->addWidget(swInfrared);
     lay->addLayout(swRow);
+
+    m_cleanIrDustBtn = new GlassButton("Clean Infrared Dust", GlassButton::Danger);
+    m_cleanIrDustBtn->setIconName("infrared");
+    m_cleanIrDustBtn->setFixedHeight(34);
+    m_cleanIrDustBtn->setToolTip("Remove ONLY the exact infrared-highlighted dust pixels (Shift+I · Undoable with Ctrl+Z)");
+    m_cleanIrDustBtn->setVisible(false);
+    connect(m_cleanIrDustBtn, &QPushButton::clicked, this, &MainWindow::cleanInfraredDust);
+    lay->addWidget(m_cleanIrDustBtn);
 
     lay->addWidget(makeGlassDivider(false));
 
@@ -1208,6 +1218,27 @@ void MainWindow::toggleInfraredMode() {
         btn->setChecked(true);
     }
     onBackgroundChanged(nextBg);
+}
+
+void MainWindow::cleanInfraredDust() {
+    if (!m_processor || !m_processor->hasImage() || !m_canvas) {
+        showToast("Open an image first", 1800);
+        return;
+    }
+    if (m_activeJob != JobNone || m_workerRunning) {
+        showToast("Busy with active task, please wait a moment", 2000);
+        return;
+    }
+
+    const int removed = m_canvas->cleanInfraredDustPixels();
+    if (removed > 0) {
+        updateQueueUI();
+        updateStatusBar();
+        showToast(QString("Cleaned %1 infrared dust pixel%2 (Ctrl+Z to undo)")
+            .arg(removed).arg(removed == 1 ? "" : "s"), 3000);
+    } else {
+        showToast("No infrared dust pixels found — mask is spotless!", 2400);
+    }
 }
 
 void MainWindow::showToast(const QString& message, int durationMs) {
@@ -2094,6 +2125,7 @@ void MainWindow::showShortcuts() {
         "  Tab               Toggle Tools Panel\n"
         "  H                 Compare Original\n"
         "  I                 Infrared Alpha Dust Scan\n"
+        "  Shift+I           Clean Infrared Dust Pixels\n"
         "  Space + Drag      Pan Canvas\n\n"
         "TOOLS\n"
         "  A                 Auto Color Remove\n"
@@ -2144,6 +2176,9 @@ void MainWindow::onBackgroundChanged(int bgType) {
         m_lastNonInfraredBg = bgType;
     }
     m_canvas->setBackgroundType(type);
+    if (m_cleanIrDustBtn) {
+        m_cleanIrDustBtn->setVisible(type == CanvasWidget::Infrared);
+    }
     m_canvas->setFocus();
     if (type == CanvasWidget::Infrared) {
         if (m_processor->hasImage()) {

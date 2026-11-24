@@ -9,7 +9,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     endif()
 endif()
 
-project(PixelEraserPro VERSION 2.0.0 LANGUAGES CXX)
+project(PixelEraserPro VERSION 2.0.1 LANGUAGES CXX)
 
 # Generate version header from template
 configure_file(
