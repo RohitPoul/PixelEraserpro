@@ -46,6 +46,7 @@ private slots:
     void removeAllImages();
     void previousImage();
     void nextImage();
+    void saveInPlace();
     void quickExport();
     void exportFile();
     void resizeImage();

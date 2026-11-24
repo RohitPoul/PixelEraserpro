@@ -336,6 +336,7 @@ void MainWindow::setupActions() {
 
     addGlobal(QKeySequence("Ctrl+N"), &MainWindow::removeAllImages);
     addGlobal(QKeySequence("Ctrl+O"), &MainWindow::openFile);
+    addGlobal(QKeySequence("Ctrl+S"), &MainWindow::saveInPlace);
     addGlobal(QKeySequence("Ctrl+D"), &MainWindow::removeCurrentImage);
     addGlobal(QKeySequence("Ctrl+E"), &MainWindow::quickExport);
     addGlobal(QKeySequence("PageUp"), &MainWindow::previousImage);
@@ -381,7 +382,9 @@ void MainWindow::showMainMenu() {
     );
     menu.addAction("Open / Add Images...   Ctrl+O", this, &MainWindow::openFile);
     menu.addAction("Add Folder of Images...", this, &MainWindow::addImageFolder);
-    menu.addAction("Export Image...        Ctrl+E", this, &MainWindow::quickExport);
+    QAction* actSave = menu.addAction("Save Over Original     Ctrl+S", this, &MainWindow::saveInPlace);
+    actSave->setEnabled(m_processor && m_processor->hasImage() && !m_currentFilePath.isEmpty());
+    menu.addAction("Export Copy...         Ctrl+E", this, &MainWindow::quickExport);
     menu.addSeparator();
     QAction* actRemCur = menu.addAction("Remove Current Image   Ctrl+D", this, &MainWindow::removeCurrentImage);
     actRemCur->setEnabled(m_currentQueueIndex >= 0 || (m_processor && m_processor->hasImage()));
@@ -1435,9 +1438,47 @@ void MainWindow::updateQueueUI() {
                 .arg(i + 1)
                 .arg(QFileInfo(item.sourcePath).fileName())
                 .arg(dirty ? "  ●" : "");
-            auto* lwItem = new QListWidgetItem(label);
+            auto* lwItem = new QListWidgetItem();
+            lwItem->setSizeHint(QSize(0, 28));
             lwItem->setToolTip(item.sourcePath);
             m_queueList->addItem(lwItem);
+
+            QWidget* rowWidget = new QWidget();
+            rowWidget->setStyleSheet("background: transparent;");
+            QHBoxLayout* rowLay = new QHBoxLayout(rowWidget);
+            rowLay->setContentsMargins(6, 1, 4, 1);
+            rowLay->setSpacing(4);
+
+            QLabel* nameLbl = new QLabel(label);
+            nameLbl->setStyleSheet(isActive
+                ? "color: #ffffff; font-size: 11px; font-weight: 700; background: transparent;"
+                : "color: #cfd5e0; font-size: 11px; font-weight: 600; background: transparent;");
+            nameLbl->setToolTip(item.sourcePath);
+            nameLbl->setMinimumWidth(0);
+
+            QPushButton* delBtn = new QPushButton("×");
+            delBtn->setFixedSize(20, 20);
+            delBtn->setFocusPolicy(Qt::NoFocus);
+            delBtn->setCursor(Qt::PointingHandCursor);
+            delBtn->setToolTip("Remove from Queue");
+            delBtn->setStyleSheet(
+                "QPushButton { background: transparent; border: none; border-radius: 6px; "
+                "  color: rgba(210, 216, 228, 145); font-size: 13px; font-weight: 700; padding: 0px; }"
+                "QPushButton:hover { background-color: rgba(235, 72, 88, 175); color: #ffffff; }"
+            );
+            const quint64 itemId = item.id;
+            connect(delBtn, &QPushButton::clicked, this, [this, itemId]() {
+                for (int idx = 0; idx < m_imageQueue.size(); ++idx) {
+                    if (m_imageQueue[idx].id == itemId) {
+                        removeQueueIndex(idx, false);
+                        break;
+                    }
+                }
+            });
+
+            rowLay->addWidget(nameLbl, 1);
+            rowLay->addWidget(delBtn, 0);
+            m_queueList->setItemWidget(lwItem, rowWidget);
         }
         if (m_currentQueueIndex >= 0 && m_currentQueueIndex < count) {
             m_queueList->setCurrentRow(m_currentQueueIndex);
@@ -1762,6 +1803,69 @@ void MainWindow::removeAllImages() {
 
 void MainWindow::discardImage() {
     removeCurrentImage();
+}
+
+void MainWindow::saveInPlace() {
+    if (m_activeJob != JobNone || m_workerRunning) {
+        showToast("Busy with active task, please wait a moment", 2000);
+        return;
+    }
+    if (!m_processor->hasImage()) return;
+
+    if (m_currentFilePath.isEmpty()) {
+        quickExport();
+        return;
+    }
+
+    const QFileInfo fi(m_currentFilePath);
+    bool confirmed = GlassDialog::confirm(
+        this,
+        "Overwrite Original File?",
+        QString("Save changes directly into \"%1\"?").arg(fi.fileName()),
+        QString("This will overwrite the existing file on disk:\n%1\n\nUse Export (Ctrl+E) if you want to save a separate copy instead.").arg(m_currentFilePath),
+        "Save & Overwrite",
+        "Cancel",
+        true
+    );
+    if (!confirmed) return;
+
+    const QString targetPath = m_currentFilePath;
+    const int softening = m_softeningSlider->value();
+    cv::Mat curSnap = m_processor->getCurrentImage().clone();
+    cv::Mat origSnap = m_processor->getOriginalImage().clone();
+
+    m_activeJob = JobExport;
+    m_workerRunning = true;
+    showGlassProgress(true, "Saving Original File", QString("Overwriting %1...").arg(fi.fileName()), -1, false);
+    QApplication::processEvents();
+
+    QFutureWatcher<bool>* watcher = new QFutureWatcher<bool>(this);
+    connect(watcher, &QFutureWatcher<bool>::finished, this, [this, watcher, targetPath]() {
+        bool ok = watcher->result();
+        watcher->deleteLater();
+        m_workerRunning = false;
+        m_activeJob = JobNone;
+        showGlassProgress(false);
+
+        if (ok) {
+            if (m_currentQueueIndex >= 0 && m_currentQueueIndex < m_imageQueue.size()) {
+                auto& item = m_imageQueue[m_currentQueueIndex];
+                item.hasUnsavedEdits = false;
+                if (!item.tempEditPath.isEmpty()) {
+                    QFile::remove(item.tempEditPath);
+                    item.tempEditPath.clear();
+                }
+                updateQueueUI();
+            }
+            showToast(QString("Saved directly to %1").arg(QFileInfo(targetPath).fileName()), 3000);
+        } else {
+            GlassDialog::error(this, "Save Failed", "Could not overwrite the file on disk.", targetPath);
+        }
+    });
+
+    watcher->setFuture(QtConcurrent::run([curSnap, origSnap, targetPath, softening]() {
+        return ImageProcessor::exportImageData(curSnap, origSnap, targetPath, softening);
+    }));
 }
 
 void MainWindow::quickExport() {
@@ -2102,7 +2206,8 @@ void MainWindow::showShortcuts() {
     GlassDialog::showShortcuts(this, "Keyboard Shortcuts",
         "FILE & QUEUE\n"
         "  Ctrl+O            Open / Add Images (Multi-Select)\n"
-        "  Ctrl+E            Export Image\n"
+        "  Ctrl+S            Save Over Original File (In-Place)\n"
+        "  Ctrl+E            Export Copy\n"
         "  Ctrl+D            Remove Current Image\n"
         "  Ctrl+N            Remove All Images\n"
         "  PageUp / Ctrl+←   Previous Image in Queue\n"
