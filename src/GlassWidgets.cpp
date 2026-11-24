@@ -1,4 +1,7 @@
 #include "GlassWidgets.h"
+#include <QGuiApplication>
+#include <QScreen>
+#include <QShowEvent>
 #include "CanvasWidget.h"
 
 #include <QPainter>
@@ -1933,6 +1936,31 @@ void GlassModalDialog::mouseReleaseEvent(QMouseEvent* event) {
     QDialog::mouseReleaseEvent(event);
 }
 
+void GlassModalDialog::showEvent(QShowEvent* event) {
+    QDialog::showEvent(event);
+    adjustSize();
+
+    QRect anchorRect;
+    if (QWidget* p = parentWidget()) {
+        QWidget* top = p->window();
+        anchorRect = top ? top->frameGeometry() : p->frameGeometry();
+    }
+    if (!anchorRect.isValid() || anchorRect.isEmpty()) {
+        if (QScreen* scr = screen() ? screen() : QGuiApplication::primaryScreen()) {
+            anchorRect = scr->availableGeometry();
+        }
+    }
+    if (anchorRect.isValid()) {
+        QPoint pos = anchorRect.center() - QPoint(width() / 2, height() / 2);
+        if (QScreen* scr = QGuiApplication::screenAt(anchorRect.center())) {
+            const QRect avail = scr->availableGeometry();
+            pos.setX(std::clamp(pos.x(), avail.left(), std::max(avail.left(), avail.right() - width() + 1)));
+            pos.setY(std::clamp(pos.y(), avail.top(), std::max(avail.top(), avail.bottom() - height() + 1)));
+        }
+        move(pos);
+    }
+}
+
 // ============================================================================
 // GlassDialog — Centralized Dark Liquid Glass Alert / Confirm System
 // ============================================================================
@@ -2006,7 +2034,7 @@ GlassDialog::GlassDialog(Kind kind, const QString& title, const QString& text,
         txtCol->addWidget(detLbl);
     }
 
-    bodyRow->addWidget(iconBadge, 0, Qt::AlignTop);
+    bodyRow->addWidget(iconBadge, 0, Qt::AlignVCenter);
     bodyRow->addLayout(txtCol, 1);
     contentLayout()->addLayout(bodyRow);
 }

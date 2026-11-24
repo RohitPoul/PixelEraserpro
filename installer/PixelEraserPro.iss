@@ -1,5 +1,5 @@
 #define MyAppName "PixelEraser Pro"
-#define MyAppVersion "2.0.1"
+#define MyAppVersion "2.0.2"
 #define MyAppPublisher "Rohit Poul"
 #define MyAppURL "https://github.com/RohitPoul/PixelEraserpro"
 #define MyAppExeName "PixelEraserPro.exe"

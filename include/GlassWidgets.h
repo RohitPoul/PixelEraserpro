@@ -332,6 +332,7 @@ public:
     QVBoxLayout* contentLayout() const { return m_contentLayout; }
 
 protected:
+    void showEvent(QShowEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
