@@ -337,6 +337,7 @@ void MainWindow::setupActions() {
     addGlobal(QKeySequence("Ctrl+N"), &MainWindow::removeAllImages);
     addGlobal(QKeySequence("Ctrl+O"), &MainWindow::openFile);
     addGlobal(QKeySequence("Ctrl+S"), &MainWindow::saveInPlace);
+    addGlobal(QKeySequence("Ctrl+Shift+S"), &MainWindow::saveAllEditedImages);
     addGlobal(QKeySequence("Ctrl+D"), &MainWindow::removeCurrentImage);
     addGlobal(QKeySequence("Ctrl+E"), &MainWindow::quickExport);
     addGlobal(QKeySequence("PageUp"), &MainWindow::previousImage);
@@ -384,6 +385,8 @@ void MainWindow::showMainMenu() {
     menu.addAction("Add Folder of Images...", this, &MainWindow::addImageFolder);
     QAction* actSave = menu.addAction("Save Over Original     Ctrl+S", this, &MainWindow::saveInPlace);
     actSave->setEnabled(m_processor && m_processor->hasImage() && !m_currentFilePath.isEmpty());
+    QAction* actSyncAll = menu.addAction("Sync / Save All Edited Ctrl+Shift+S", this, &MainWindow::saveAllEditedImages);
+    actSyncAll->setEnabled(hasAnyUnsavedEdits());
     menu.addAction("Export Copy...         Ctrl+E", this, &MainWindow::quickExport);
     menu.addSeparator();
     QAction* actRemCur = menu.addAction("Remove Current Image   Ctrl+D", this, &MainWindow::removeCurrentImage);
@@ -797,13 +800,23 @@ void MainWindow::setupStudioLayout() {
 
     QHBoxLayout* qHdr = new QHBoxLayout();
     qHdr->setContentsMargins(0, 2, 0, 0);
+    qHdr->setSpacing(5);
     m_queueHeaderLabel = makeSectionTag("IMAGE QUEUE (0)");
+
+    GlassButton* qSyncBtn = new GlassButton("Sync", GlassButton::Primary);
+    qSyncBtn->setIconName("sync");
+    qSyncBtn->setFixedHeight(22);
+    qSyncBtn->setToolTip("Sync / Save All Edited Images in Queue (Ctrl+Shift+S)");
+    connect(qSyncBtn, &QPushButton::clicked, this, &MainWindow::saveAllEditedImages);
+
     GlassButton* qClearBtn = new GlassButton("Clear", GlassButton::Ghost);
     qClearBtn->setFixedHeight(22);
     qClearBtn->setToolTip("Remove All Images from Queue");
     connect(qClearBtn, &QPushButton::clicked, this, &MainWindow::removeAllImages);
+
     qHdr->addWidget(m_queueHeaderLabel);
     qHdr->addStretch();
+    qHdr->addWidget(qSyncBtn);
     qHdr->addWidget(qClearBtn);
     qSecLay->addLayout(qHdr);
 
@@ -1868,6 +1881,148 @@ void MainWindow::saveInPlace() {
     }));
 }
 
+void MainWindow::saveAllEditedImages() {
+    if (m_activeJob != JobNone || m_workerRunning) {
+        showToast("Busy with active task, please wait a moment", 2000);
+        return;
+    }
+
+    struct SyncTask {
+        quint64 itemId = 0;
+        QString sourcePath;
+        QString tempEditPath;
+        bool isActive = false;
+    };
+
+    QVector<SyncTask> tasks;
+    for (int i = 0; i < m_imageQueue.size(); ++i) {
+        const ImageQueueItem& item = m_imageQueue[i];
+        const bool isActive = (i == m_currentQueueIndex);
+        if (isActive) {
+            if (m_processor->hasImage() && (m_historyManager->canUndo() || item.hasUnsavedEdits)) {
+                tasks.append({item.id, item.sourcePath, item.tempEditPath, true});
+            }
+        } else if (item.hasUnsavedEdits && !item.tempEditPath.isEmpty() && QFile::exists(item.tempEditPath)) {
+            tasks.append({item.id, item.sourcePath, item.tempEditPath, false});
+        }
+    }
+
+    if (tasks.isEmpty()) {
+        showToast("All queued images are already synced!", 2200);
+        return;
+    }
+
+    const int n = static_cast<int>(tasks.size());
+    const int choice = GlassDialog::confirmThreeWay(
+        this,
+        "Sync / Save All Edited Images",
+        QString("Save changes for %1 edited image%2?").arg(n).arg(n == 1 ? "" : "s"),
+        "• Export Copies — saves each edited image using your Export Settings (prefix/suffix/format).\n"
+        "• Overwrite Originals — writes changes directly into each original file on disk.",
+        "Export Copies",
+        "Overwrite Originals",
+        "Cancel"
+    );
+    if (choice == 0) return;
+
+    const bool overwriteOriginals = (choice == 2);
+    const ExportSettings exportCfg = SettingsDialog::loadSettings();
+    const int softening = m_softeningSlider->value();
+
+    cv::Mat activeCurSnap;
+    cv::Mat activeOrigSnap;
+    if (m_processor->hasImage()) {
+        activeCurSnap = m_processor->getCurrentImage().clone();
+        activeOrigSnap = m_processor->getOriginalImage().clone();
+    }
+
+    m_activeJob = JobExport;
+    m_workerRunning = true;
+    showGlassProgress(true,
+        overwriteOriginals ? "Syncing Over Originals" : "Syncing Export Copies",
+        QString("Saving 0 / %1...").arg(n), 0, false);
+    QApplication::processEvents();
+
+    struct SyncResult {
+        int saved = 0;
+        int failed = 0;
+        QVector<quint64> succeededIds;
+    };
+
+    QFutureWatcher<SyncResult>* watcher = new QFutureWatcher<SyncResult>(this);
+    connect(watcher, &QFutureWatcher<SyncResult>::finished, this, [this, watcher, overwriteOriginals]() {
+        const SyncResult res = watcher->result();
+        watcher->deleteLater();
+        m_workerRunning = false;
+        m_activeJob = JobNone;
+        showGlassProgress(false);
+
+        QSet<quint64> doneIds(res.succeededIds.begin(), res.succeededIds.end());
+        for (ImageQueueItem& item : m_imageQueue) {
+            if (doneIds.contains(item.id)) {
+                item.hasUnsavedEdits = false;
+                if (overwriteOriginals && !item.tempEditPath.isEmpty()) {
+                    QFile::remove(item.tempEditPath);
+                    item.tempEditPath.clear();
+                }
+            }
+        }
+        updateQueueUI();
+        updateStatusBar();
+
+        if (res.failed == 0) {
+            showToast(QString("Synced %1 image%2 successfully").arg(res.saved).arg(res.saved == 1 ? "" : "s"), 3200);
+        } else {
+            GlassDialog::warning(this, "Sync Completed with Warnings",
+                QString("Saved %1 image(s), failed %2.").arg(res.saved).arg(res.failed),
+                "Some destination files may be read-only or locked by another app.");
+        }
+    });
+
+    watcher->setFuture(QtConcurrent::run([this, tasks, activeCurSnap, activeOrigSnap, overwriteOriginals, exportCfg, softening]() -> SyncResult {
+        SyncResult res;
+        const int total = static_cast<int>(tasks.size());
+        for (int i = 0; i < total; ++i) {
+            const SyncTask& t = tasks[i];
+            const QString destPath = overwriteOriginals
+                ? t.sourcePath
+                : SettingsDialog::buildExportPath(t.sourcePath, exportCfg);
+            const QString destName = QFileInfo(destPath).fileName();
+            const int pct = (i * 100) / std::max(1, total);
+            const int nextPct = ((i + 1) * 100) / std::max(1, total);
+
+            QMetaObject::invokeMethod(this, [this, pct, nextPct, i, total, destName]() {
+                setProgressStage(pct, nextPct, QString("Syncing %1 / %2 — %3").arg(i + 1).arg(total).arg(destName));
+            }, Qt::QueuedConnection);
+
+            bool ok = false;
+            if (t.isActive) {
+                ok = ImageProcessor::exportImageData(activeCurSnap, activeOrigSnap, destPath, softening);
+            } else {
+                const QString ext = QFileInfo(destPath).suffix().toLower();
+                if (ext == "png" && softening == 0) {
+                    // Ultra-fast direct file copy: tempEditPath is already a lossless Self-Remembering RGBA PNG!
+                    QFile::remove(destPath);
+                    ok = QFile::copy(t.tempEditPath, destPath);
+                } else {
+                    ImageProcessor::LoadedImageData decoded = ImageProcessor::decodeImageFile(t.tempEditPath, false);
+                    if (decoded.ok) {
+                        ok = ImageProcessor::exportImageData(decoded.currentImage, decoded.originalImage, destPath, softening);
+                    }
+                }
+            }
+
+            if (ok) {
+                ++res.saved;
+                res.succeededIds.append(t.itemId);
+            } else {
+                ++res.failed;
+            }
+        }
+        return res;
+    }));
+}
+
 void MainWindow::quickExport() {
     if (m_activeJob != JobNone || m_workerRunning) {
         showToast("Busy with active task, please wait a moment", 2000);
@@ -2207,6 +2362,7 @@ void MainWindow::showShortcuts() {
         "FILE & QUEUE\n"
         "  Ctrl+O            Open / Add Images (Multi-Select)\n"
         "  Ctrl+S            Save Over Original File (In-Place)\n"
+        "  Ctrl+Shift+S      Sync / Save All Edited Queue Images\n"
         "  Ctrl+E            Export Copy\n"
         "  Ctrl+D            Remove Current Image\n"
         "  Ctrl+N            Remove All Images\n"

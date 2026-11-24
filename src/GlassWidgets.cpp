@@ -296,6 +296,13 @@ void paintIcon(QPainter& p, const QString& name, const QRectF& rect, const QColo
         hills.lineTo(pt(16.2, 11.8));
         hills.lineTo(pt(19.2, 17.5));
         p.drawPath(hills);
+    } else if (name == "sync") {
+        p.drawArc(QRectF(pt(5.5, 5.5), pt(18.5, 18.5)), 35 * 16, 130 * 16);
+        p.drawLine(pt(16.8, 7.6), pt(18.6, 8.2));
+        p.drawLine(pt(18.6, 8.2), pt(17.9, 6.2));
+        p.drawArc(QRectF(pt(5.5, 5.5), pt(18.5, 18.5)), 215 * 16, 130 * 16);
+        p.drawLine(pt(7.2, 16.4), pt(5.4, 15.8));
+        p.drawLine(pt(5.4, 15.8), pt(6.1, 17.8));
     } else if (name == "settings") {
         p.drawEllipse(pt(12.0, 12.0), 3.1 * u, 3.1 * u);
         p.drawEllipse(pt(12.0, 12.0), 6.2 * u, 6.2 * u);
